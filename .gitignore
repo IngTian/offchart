@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.DS_Store
+.streamlit/secrets.toml
+.ipynb_checkpoints/
+
+# data/ is deliberately NOT ignored -- committing it is the whole mechanism by
+# which snapshot-only sources ever acquire a history.

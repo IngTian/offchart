@@ -1,0 +1,61 @@
+name: ingest
+
+# Runs daily rather than weekly, on purpose:
+#
+#  - The CFTC release is Friday 15:30 ET, but ingest is idempotent (upsert keyed
+#    on report_date), so a daily run costs nothing and removes the single point
+#    of failure of a once-a-week cron. It also picks up CFTC revisions to
+#    already-published weeks.
+#  - The snapshot-only sources (OpenRouter pricing) have NO backfill. For those,
+#    a run that does not happen is a hole in the dataset forever. Daily is the
+#    minimum defensible cadence.
+#
+# 20:15 UTC == 16:15 ET during EDT, 15:15 ET during EST. The Friday CFTC file
+# lands at 15:30 ET, so during EST the Friday data arrives on Saturday's run.
+# That is fine and is why the app shows data age rather than assuming freshness.
+
+on:
+  schedule:
+    - cron: "15 20 * * *"
+  workflow_dispatch:
+  push:
+    paths:
+      - "sources/**"
+      - "lib/**"
+      - "scripts/ingest.py"
+      - ".github/workflows/ingest.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Pull all sources
+        run: python -m scripts.ingest
+
+      - name: Commit any new data
+        run: |
+          git config user.name  "watchboard-bot"
+          git config user.email "watchboard-bot@users.noreply.github.com"
+          git add data/
+          if git diff --staged --quiet; then
+            echo "no data changes"
+          else
+            git commit -m "data: ingest $(date -u +%Y-%m-%d)"
+            git push
+          fi
