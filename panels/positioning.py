@@ -397,7 +397,9 @@ def _panel() -> None:
             # floor, which hides exactly the early positioning history the chart is
             # there to sit beside.
             price_log=bool(ref and ref.symbol in _LOG_PRICE),
-            height=620 if not price.empty else 460,
+            # Taller with a price panel: three panels in 620px left the price
+            # squeezed, and it is the one a reader orients by.
+            height=760 if not price.empty else 460,
         ),
         width="stretch",
         config=charts.png_config(f"watchboard-{slug}"),

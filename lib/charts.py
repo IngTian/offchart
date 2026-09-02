@@ -277,48 +277,65 @@ def spotlight(
     at once and its subplot titles, legend row and dense axis furniture are what
     made the board feel like a slide deck. This one is built to be GLANCED at.
 
+    ONE X-AXIS, SEVERAL Y-AXES -- AND THAT IS THE WHOLE TRICK
+
+    Built by hand rather than with make_subplots, because make_subplots gives each
+    stacked panel its OWN x-axis and links them with `matches`. Linked axes zoom
+    together but they are still separate hover targets: the crosshair is drawn only
+    inside the panel the pointer happens to be in, and the tooltip lists only that
+    panel's series. Reading positioning against price then means hovering twice and
+    holding the date in your head. (plotly's `hoversubplots` is meant to fix that;
+    it did not, on either hovermode, with either matches wiring.)
+
+    Here there is exactly ONE x-axis and three y-axes at different vertical
+    domains. All three traces live on that single axis, so "x unified" hover has
+    nothing to reconcile -- one date, one tooltip, every series in it -- and the
+    spike is a single line through the whole figure because there is only one
+    x-axis for it to cross.
+
     Design decisions, each from the anti-pattern list rather than from taste:
 
-    - ONE SERIES, SO NO LEGEND. A legend box for a single line is ink doing no
-      work; the heading names the series instead.
+    - ONE SERIES PER PANEL, SO NO LEGEND. A legend box for a single line is ink
+      doing no work; the heading and the axis titles name the series instead.
     - SOLID HAIRLINE GRID, HORIZONTAL ONLY. Dashed gridlines read as a threshold
-      or a projection when they are just a grid, and vertical grid on a dense time
-      series is pure noise. Dashes are kept for real reference levels.
-    - THE ZERO LINE IS THE BASELINE, not a gridline. For a net position, which
-      side of zero you are on is the first thing to read.
-    - A FILL TO ZERO, at a tenth opacity. It encodes distance-from-flat without
-      adding a mark, and it works for both signs.
-    - OPEN INTEREST AS A STRIP, not a second chart. Display rule 4 says open
-      interest must be on screen beside positioning -- a share can move because
-      the cohort traded or because open interest did. A short strip under the main
-      panel satisfies that honestly and still reads as one chart.
-    - CLIENT-SIDE RANGE BUTTONS. See RANGE_BUTTONS: the reason the chart feels
-      responsive is that zooming never touches the server.
-
-    - PRICE ON TOP, AS ITS OWN PANEL. This is display rule 1 doing real work rather
-      than being a slogan: price and percent-of-open-interest have nothing to do
-      with each other dimensionally, and putting them on one plot with two y-scales
-      would let the scaling choice manufacture whatever visual correlation the
-      author wanted. Stacked panels sharing one x-axis show the same comparison and
-      cannot lie about its strength. The reader compares turning points, which is
-      the only comparison the data supports.
+      when they are just a grid, and vertical grid on a dense time series is noise.
+      Dashes are kept for real reference levels.
+    - THE ZERO LINE IS THE BASELINE, not a gridline. For a net position, which side
+      of zero you are on is the first thing to read.
+    - A FILL TO ZERO at a tenth opacity, encoding distance-from-flat without adding
+      a mark, and working for both signs.
+    - PRICE ON TOP AND OPEN INTEREST AS A STRIP, never a twin axis. Price and
+      percent-of-open-interest are dimensionally unrelated, so a shared y-scale
+      would let the scaling choice manufacture whatever correlation the author
+      wanted. Separate panels show the same comparison and cannot overstate it.
+      Open interest is on screen because a share can move when the cohort trades or
+      when open interest does, and the share alone cannot say which (rule 4).
+    - CLIENT-SIDE RANGE BUTTONS, so zooming never touches the server.
     """
     has_price = price is not None and price.notna().any()
-    rows = 3 if has_price else 2
-    heights = [0.40, 0.42, 0.18] if has_price else [0.76, 0.24]
-    fig = make_subplots(
-        rows=rows,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.055 if has_price else 0.06,
-        row_heights=heights,
-    )
-    # Row indices shift when the price panel is present, so name them once rather
-    # than sprinkling conditionals through every trace and axis call below.
-    r_price = 1 if has_price else None
-    r_main = 2 if has_price else 1
-    r_oi = 3 if has_price else 2
 
+    # Vertical domains, top to bottom, with gaps between them. Price takes the most
+    # room: it is what a reader orients by. Open interest needs only enough to show
+    # its shape and its steps.
+    if has_price:
+        dom_price = (0.58, 1.0)
+        dom_main = (0.20, 0.50)
+        dom_oi = (0.0, 0.12)
+    else:
+        dom_price = None
+        dom_main = (0.30, 1.0)
+        dom_oi = (0.0, 0.20)
+
+    signed = not metrics.is_ratio_safe(kind)
+    axis_font = dict(size=12, color=MUTED)
+    tick_font = dict(size=11.5, color=MUTED)
+    fig = go.Figure()
+
+    # The three drawn lines carry no hover of their own. plotly builds one unified
+    # label PER (x, y) subplot, so three traces on three y-axes give three separate
+    # tooltips no matter how the axes are wired -- you would read price in one box
+    # and positioning in another. Instead they are hover-silent and a single
+    # invisible trace below carries every value for the hovered date.
     if has_price:
         fig.add_trace(
             go.Scatter(
@@ -327,33 +344,12 @@ def spotlight(
                 mode="lines",
                 line=dict(color=INK_SECONDARY, width=1.6),
                 connectgaps=False,
-                hovertemplate="%{y:,.2f}<extra></extra>",
-                name="",
-            ),
-            row=r_price,
-            col=1,
+                hoverinfo="skip",
+                name=price_label or "price",
+                yaxis="y3",
+            )
         )
-        # A log axis defaults to labelling every minor tick, which on a 15x move
-        # prints "2 3 4 5 6 7 8 9 10k 2 3" down the side -- noise that reads as a
-        # broken axis. dtick=1 is one decade per label; the crosshair carries the
-        # exact value, and the panel is there for shape.
-        log_ticks = dict(dtick=1, tickformat="~s", minor=dict(showgrid=False)) if price_log else {}
-        fig.update_yaxes(
-            title_text=price_label or "price",
-            row=r_price,
-            col=1,
-            gridcolor=GRID,
-            zeroline=False,
-            showline=False,
-            ticks="",
-            type="log" if price_log else "linear",
-            title_font=dict(size=12, color=MUTED),
-            tickfont=dict(size=11.5, color=MUTED),
-            **log_ticks,
-        )
-        fig.update_xaxes(showgrid=False, showline=False, ticks="", row=r_price, col=1)
 
-    signed = not metrics.is_ratio_safe(kind)
     fig.add_trace(
         go.Scatter(
             x=values.index,
@@ -363,11 +359,10 @@ def spotlight(
             fill="tozeroy",
             fillcolor=ACCENT_FILL,
             connectgaps=False,  # a gap in the data must look like a gap
-            hovertemplate="%{y:,.2f} " + unit + "<extra></extra>",
-            name="",
-        ),
-        row=r_main,
-        col=1,
+            hoverinfo="skip",
+            name=unit,
+            yaxis="y",
+        )
     )
     fig.add_trace(
         go.Scatter(
@@ -376,112 +371,155 @@ def spotlight(
             mode="lines",
             line=dict(color=MUTED, width=1.2),
             connectgaps=False,
-            hovertemplate="%{y:,.0f} contracts open<extra></extra>",
-            name="",
-        ),
-        row=r_oi,
-        col=1,
+            hoverinfo="skip",
+            name="open interest",
+            yaxis="y2",
+        )
     )
 
-    if signed:
-        fig.add_hline(y=0, line=dict(color=BASELINE, width=1.2), row=r_main, col=1)
-    for g in guides:
-        fig.add_hline(y=g, line=dict(color=MUTED, width=1, dash="dot"), row=r_main, col=1)
-    for b in breaks:
-        # A contract re-specification. Levels either side are not comparable, so
-        # the break is drawn rather than left for a caption to mention.
-        fig.add_vline(x=b, line=dict(color=SEAL, width=1, dash="dot"))
+    # ONE TOOLTIP FOR EVERY PANEL. An invisible line on the middle axis, carrying
+    # price and open interest as customdata, so a single hover reports all three
+    # series at one date -- listed top-to-bottom in the same order as the panels.
+    px_at = (
+        price.reindex(values.index).to_numpy()
+        if has_price
+        else [None] * len(values)
+    )
+    oi_at = open_interest.reindex(values.index).to_numpy()
+    rows_tpl = []
+    if has_price:
+        rows_tpl.append(f"{price_label or 'price'}  <b>%{{customdata[0]:,.2f}}</b>")
+    rows_tpl.append(f"net  <b>%{{y:,.2f}}</b> {unit}")
+    rows_tpl.append("open interest  <b>%{customdata[1]:,.0f}</b>")
+    fig.add_trace(
+        go.Scatter(
+            x=values.index,
+            y=values.to_numpy(),
+            mode="lines",
+            line=dict(width=0, color="rgba(0,0,0,0)"),
+            customdata=list(zip(px_at, oi_at)),
+            hovertemplate="<br>".join(rows_tpl) + "<extra></extra>",
+            name="",
+            yaxis="y",
+            showlegend=False,
+        )
+    )
 
-    fig.update_layout(
+    # Reference levels, drawn against a specific y-axis rather than a subplot row.
+    shapes = []
+    if signed:
+        shapes.append(
+            dict(type="line", xref="paper", x0=0, x1=1, yref="y", y0=0, y1=0,
+                 line=dict(color=BASELINE, width=1.2), layer="below")
+        )
+    for g in guides:
+        shapes.append(
+            dict(type="line", xref="paper", x0=0, x1=1, yref="y", y0=g, y1=g,
+                 line=dict(color=MUTED, width=1, dash="dot"), layer="below")
+        )
+    for b in breaks:
+        # A contract re-specification. Spanning the full paper height rather than
+        # one panel, because the break applies to every series at once.
+        shapes.append(
+            dict(type="line", xref="x", x0=b, x1=b, yref="paper", y0=0, y1=1,
+                 line=dict(color=SEAL, width=1, dash="dot"), layer="below")
+        )
+
+    log_ticks = dict(dtick=1, tickformat="~s", minor=dict(showgrid=False)) if price_log else {}
+
+    layout = dict(
         height=height,
         # Top margin carries the range buttons; the bottom must include the x-axis
         # tick band or the year labels get cropped by the card edge -- sizing a
         # container to the plot and forgetting the axis is its own anti-pattern.
-        margin=dict(l=62, r=24, t=48, b=52),
+        margin=dict(l=64, r=24, t=48, b=52),
         plot_bgcolor=SURFACE,
         paper_bgcolor=SURFACE,
         font=dict(family=FONT, size=12.5, color=INK_SECONDARY),
         showlegend=False,
+        # One tooltip listing every series at the hovered date. With a single
+        # x-axis this needs no hoversubplots gymnastics -- the traces already share
+        # the axis that "unified" groups by.
         hovermode="x unified",
+        # SNAP ALWAYS, NEVER BLINK. The defaults only show the spike and tooltip
+        # within ~20px of a point, so moving along a weekly series makes the
+        # crosshair strobe between observations. -1 means "always take the nearest
+        # point on the x-axis", so it tracks the pointer continuously.
+        spikedistance=-1,
+        hoverdistance=-1,
         hoverlabel=dict(
             bgcolor=theme.c("chip"),
             bordercolor=theme.c("baseline"),
             font=dict(family=FONT, size=12.5, color=INK),
+            align="left",
         ),
-        modebar=dict(
-            bgcolor="rgba(0,0,0,0)",
-            color=theme.c("faint"),
-            activecolor=ACCENT_LINE,
-        ),
+        modebar=dict(bgcolor="rgba(0,0,0,0)", color=theme.c("faint"),
+                     activecolor=ACCENT_LINE),
         dragmode=False,
         transition=dict(duration=250, easing="cubic-in-out"),
-    )
-
-    fig.update_yaxes(
-        title_text=unit,
-        row=r_main,
-        col=1,
-        gridcolor=GRID,
-        griddash="solid",
-        zeroline=False,
-        showline=False,
-        ticks="",
-        title_font=dict(size=12, color=MUTED),
-        tickfont=dict(size=11.5, color=MUTED),
-    )
-    fig.update_yaxes(
-        title_text="open interest",
-        row=r_oi,
-        col=1,
-        gridcolor=GRID,
-        zeroline=False,
-        showline=False,
-        ticks="",
-        rangemode="tozero",
-        title_font=dict(size=12, color=MUTED),
-        tickfont=dict(size=11.5, color=MUTED),
-    )
-    # Vertical gridlines off on both panels: on twenty years of weekly data they
-    # are noise, and the crosshair already answers "which date is this".
-    #
-    # The range buttons live ABOVE the plot, on the top panel's axis. Below it they
-    # were clipped by the card edge -- the figure has no room under the x-axis
-    # labels, and growing it to make room wastes the space on every other render.
-    # Above is also where a reader looks for a time control.
-    fig.update_xaxes(
-        showgrid=False,
-        showline=False,
-        ticks="",
-        row=1,  # the topmost panel, whichever it is -- the buttons sit above it
-        col=1,
-        rangeselector=dict(
-            buttons=list(RANGE_BUTTONS),
-            bgcolor=theme.c("chip"),
-            activecolor=ACCENT_FILL,
-            bordercolor=theme.c("baseline"),
-            borderwidth=1,
-            font=dict(family=FONT, size=11.5, color=INK_SECONDARY),
-            x=0,
-            xanchor="left",
-            y=1.0,
-            yanchor="bottom",
+        shapes=shapes,
+        xaxis=dict(
+            domain=(0.0, 1.0),
+            anchor="y2",           # sits under the bottom panel
+            showgrid=False,
+            showline=True,
+            linecolor=BASELINE,
+            linewidth=1,
+            ticks="",
+            tickfont=tick_font,
+            # The crosshair. One x-axis means one line through the whole figure.
+            showspikes=True,
+            spikemode="across",
+            spikethickness=1,
+            spikecolor=MUTED,
+            spikedash="solid",
+            rangeselector=dict(
+                buttons=list(RANGE_BUTTONS),
+                bgcolor=theme.c("chip"),
+                activecolor=ACCENT_FILL,
+                bordercolor=theme.c("baseline"),
+                borderwidth=1,
+                font=dict(family=FONT, size=11.5, color=INK_SECONDARY),
+                x=0, xanchor="left", y=1.0, yanchor="bottom",
+            ),
+        ),
+        yaxis=dict(
+            domain=dom_main,
+            anchor="x",
+            title=dict(text=unit, font=axis_font),
+            gridcolor=GRID,
+            zeroline=False,
+            showline=False,
+            ticks="",
+            tickfont=tick_font,
+        ),
+        yaxis2=dict(
+            domain=dom_oi,
+            anchor="x",
+            title=dict(text="open interest", font=axis_font),
+            gridcolor=GRID,
+            zeroline=False,
+            showline=False,
+            ticks="",
+            rangemode="tozero",
+            tickfont=tick_font,
         ),
     )
-    fig.update_xaxes(
-        showgrid=False,
-        showline=True,
-        linecolor=BASELINE,
-        linewidth=1,
-        ticks="",
-        tickfont=dict(size=11.5, color=MUTED),
-        row=r_oi,  # only the bottom panel carries the date labels
-        col=1,
-    )
-    # The crosshair: readers aim at a date, never at a 2px line.
-    fig.update_xaxes(
-        showspikes=True, spikemode="across", spikethickness=1,
-        spikecolor=BASELINE, spikedash="solid",
-    )
+    if has_price:
+        layout["yaxis3"] = dict(
+            domain=dom_price,
+            anchor="x",
+            title=dict(text=price_label or "price", font=axis_font),
+            gridcolor=GRID,
+            zeroline=False,
+            showline=False,
+            ticks="",
+            type="log" if price_log else "linear",
+            tickfont=tick_font,
+            **log_ticks,
+        )
+
+    fig.update_layout(**layout)
     return fig
 
 
