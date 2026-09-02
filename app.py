@@ -13,11 +13,14 @@ restated per board.
 
 WHY THERE IS SO LITTLE CHROME
 
-Streamlit reruns the whole script on every widget interaction. A page with a row
-of controls therefore feels like a slide advancing, because that is structurally
-what it is. So the board carries no widgets: the zoom presets and the crosshair
-are plotly's and run in the browser, and this page never reruns while it is read.
-The sidebar appears only when there is more than one board to choose between.
+Streamlit reruns the whole script on every widget interaction. A page with a row of
+controls therefore feels like a slide advancing, because that is structurally what
+it is. So everything that responds to the pointer runs in the BROWSER and never
+reaches the server: the zoom presets are plotly's, and the crosshair is this repo's
+own (see panels/positioning._smooth_crosshair -- plotly throttles its hover to
+about 17 updates a second, which is what "not smooth" turned out to mean). The
+board's few controls live in an st.fragment, so they rerun that function rather
+than this page. The sidebar appears only when there is more than one board.
 """
 from __future__ import annotations
 
@@ -112,6 +115,21 @@ st.markdown(
         padding: .2rem .5rem; cursor: pointer; opacity: 0; transition: opacity .18s; }}
       [data-testid="stPlotlyChart"]:hover .wb-copy {{ opacity: 1; }}
       .wb-copy:hover {{ color: {T['accent']}; border-color: {T['baseline']}; }}
+
+      /* The frame-rate crosshair, injected by panels/positioning._smooth_crosshair.
+         No CSS transition on transform: the whole point is that it follows the
+         pointer every frame, and easing 16ms-apart updates would reintroduce
+         exactly the lag it was built to remove. Only opacity eases, on enter/exit. */
+      .wb-xhair {{ position: absolute; width: 1px; left: 0; top: 0;
+        background: {T['muted']}; pointer-events: none; z-index: 3;
+        opacity: 0; transition: opacity .12s ease-out; will-change: transform; }}
+      .wb-xtip {{ position: absolute; left: 0; top: 0; pointer-events: none; z-index: 4;
+        background: {T['chip']}; border: 1px solid {T['baseline']}; border-radius: 7px;
+        padding: .4rem .6rem; font-family: {theme.FONT_SANS}; font-size: .8rem;
+        line-height: 1.5; color: {T['ink']}; white-space: nowrap;
+        opacity: 0; transition: opacity .12s ease-out; will-change: transform;
+        box-shadow: 0 4px 16px rgba(0,0,0,.35); }}
+      .wb-xtip b {{ color: {T['accent']}; font-weight: 600; }}
 
       [data-testid="stCaptionContainer"] p {{ font-size: .85rem; color: {T['faint']};
         line-height: 1.6; }}
