@@ -38,15 +38,55 @@ from plotly.subplots import make_subplots
 
 from lib import metrics
 
-# A restrained, colour-blind-safe set. Order is the assignment order.
-ACCENT = "#2E6F9E"
-MUTED = "#9AA5B1"
-WARN = "#B4623A"
-POSITIVE = "#3F7F6E"
-SERIES_COLORS = (ACCENT, WARN, POSITIVE, "#7A6B9E", "#8A7250", MUTED)
+# Validated categorical palette, in slot order. Slots are assigned in this order
+# and never cycled -- a 9th series folds into "other" or becomes a small multiple.
+# Worst adjacent CVD delta-E is 9.1 on the light surface against a target of 8.
+SERIES_1 = "#2a78d6"  # blue
+SERIES_2 = "#eb6834"  # orange
+SERIES_3 = "#1baf7a"  # aqua
+SERIES_4 = "#eda100"  # yellow
+SERIES_COLORS = (SERIES_1, SERIES_2, SERIES_3, SERIES_4, "#e87ba4", "#008300")
 
-GRID = "rgba(154,165,177,0.22)"
-ZERO_LINE = "rgba(154,165,177,0.85)"
+# Diverging poles for a signed quantity: warm/cool, so they read as opposite.
+POS = SERIES_1
+NEG = "#e34948"
+
+# Chrome and ink. Gridlines and axis rules are SOLID hairlines one shade off the
+# surface -- dashing them adds noise and reads as "threshold" when it is just a
+# grid. Dashes are reserved here for actual reference levels.
+SURFACE = "#fcfcfb"
+INK = "#0b0b0b"
+INK_SECONDARY = "#52514e"
+MUTED = "#898781"
+GRID = "#e1e0d9"
+BASELINE = "#c3c2b7"
+
+# Kept for the parked boards, which were written against these names.
+ACCENT = SERIES_1
+WARN = SERIES_2
+POSITIVE = SERIES_3
+ZERO_LINE = BASELINE
+
+FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif'
+
+#: Client-side zoom presets. These are the smoothness win in a Streamlit app:
+#: plotly handles them in the browser, so the range changes instantly and the
+#: server never reruns the script. A widget doing the same job would round-trip.
+RANGE_BUTTONS = (
+    dict(count=1, label="1Y", step="year", stepmode="backward"),
+    dict(count=5, label="5Y", step="year", stepmode="backward"),
+    dict(count=10, label="10Y", step="year", stepmode="backward"),
+    dict(step="all", label="All"),
+)
+
+#: Passed to st.plotly_chart. No modebar, no scroll-hijack, responsive.
+PLOTLY_CONFIG = {
+    "displayModeBar": False,
+    "scrollZoom": False,
+    "doubleClick": "reset",
+    "displaylogo": False,
+    "responsive": True,
+}
 
 
 @dataclass
@@ -183,6 +223,175 @@ def stacked(
     )
     for ann in fig.layout.annotations:
         ann.font.size = 12.5
+    return fig
+
+
+def spotlight(
+    values: pd.Series,
+    open_interest: pd.Series,
+    *,
+    unit: str,
+    kind: str = "net_share",
+    guides: tuple[float, ...] = (),
+    breaks: tuple = (),
+    height: int = 460,
+) -> go.Figure:
+    """One market, one measure. The polished single-series figure.
+
+    Deliberately different from stacked(): that builder is for reading five things
+    at once and its subplot titles, legend row and dense axis furniture are what
+    made the board feel like a slide deck. This one is built to be GLANCED at.
+
+    Design decisions, each from the anti-pattern list rather than from taste:
+
+    - ONE SERIES, SO NO LEGEND. A legend box for a single line is ink doing no
+      work; the heading names the series instead.
+    - SOLID HAIRLINE GRID, HORIZONTAL ONLY. Dashed gridlines read as a threshold
+      or a projection when they are just a grid, and vertical grid on a dense time
+      series is pure noise. Dashes are kept for real reference levels.
+    - THE ZERO LINE IS THE BASELINE, not a gridline. For a net position, which
+      side of zero you are on is the first thing to read.
+    - A FILL TO ZERO, at a tenth opacity. It encodes distance-from-flat without
+      adding a mark, and it works for both signs.
+    - OPEN INTEREST AS A STRIP, not a second chart. Display rule 4 says open
+      interest must be on screen beside positioning -- a share can move because
+      the cohort traded or because open interest did. A short strip under the main
+      panel satisfies that honestly and still reads as one chart.
+    - CLIENT-SIDE RANGE BUTTONS. See RANGE_BUTTONS: the reason the chart feels
+      responsive is that zooming never touches the server.
+    """
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.06,
+        row_heights=[0.76, 0.24],
+    )
+
+    signed = not metrics.is_ratio_safe(kind)
+    fig.add_trace(
+        go.Scatter(
+            x=values.index,
+            y=values.to_numpy(),
+            mode="lines",
+            line=dict(color=SERIES_1, width=2),
+            fill="tozeroy",
+            fillcolor="rgba(42,120,214,0.10)",
+            connectgaps=False,  # a gap in the data must look like a gap
+            hovertemplate="%{y:,.2f} " + unit + "<extra></extra>",
+            name="",
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=open_interest.index,
+            y=open_interest.to_numpy(),
+            mode="lines",
+            line=dict(color=MUTED, width=1.2),
+            connectgaps=False,
+            hovertemplate="%{y:,.0f} contracts open<extra></extra>",
+            name="",
+        ),
+        row=2,
+        col=1,
+    )
+
+    if signed:
+        fig.add_hline(y=0, line=dict(color=BASELINE, width=1.2), row=1, col=1)
+    for g in guides:
+        fig.add_hline(y=g, line=dict(color=MUTED, width=1, dash="dot"), row=1, col=1)
+    for b in breaks:
+        # A contract re-specification. Levels either side are not comparable, so
+        # the break is drawn rather than left for a caption to mention.
+        fig.add_vline(x=b, line=dict(color=NEG, width=1, dash="dot"))
+
+    fig.update_layout(
+        height=height,
+        # Top margin carries the range buttons; the bottom must include the x-axis
+        # tick band or the year labels get cropped by the card edge -- sizing a
+        # container to the plot and forgetting the axis is its own anti-pattern.
+        margin=dict(l=62, r=24, t=48, b=52),
+        plot_bgcolor=SURFACE,
+        paper_bgcolor=SURFACE,
+        font=dict(family=FONT, size=12.5, color=INK_SECONDARY),
+        showlegend=False,
+        hovermode="x unified",
+        hoverlabel=dict(
+            bgcolor="white",
+            bordercolor=GRID,
+            font=dict(family=FONT, size=12.5, color=INK),
+        ),
+        dragmode=False,
+        transition=dict(duration=250, easing="cubic-in-out"),
+    )
+
+    fig.update_yaxes(
+        title_text=unit,
+        row=1,
+        col=1,
+        gridcolor=GRID,
+        griddash="solid",
+        zeroline=False,
+        showline=False,
+        ticks="",
+        title_font=dict(size=12, color=MUTED),
+        tickfont=dict(size=11.5, color=MUTED),
+    )
+    fig.update_yaxes(
+        title_text="open interest",
+        row=2,
+        col=1,
+        gridcolor=GRID,
+        zeroline=False,
+        showline=False,
+        ticks="",
+        rangemode="tozero",
+        title_font=dict(size=12, color=MUTED),
+        tickfont=dict(size=11.5, color=MUTED),
+    )
+    # Vertical gridlines off on both panels: on twenty years of weekly data they
+    # are noise, and the crosshair already answers "which date is this".
+    #
+    # The range buttons live ABOVE the plot, on the top panel's axis. Below it they
+    # were clipped by the card edge -- the figure has no room under the x-axis
+    # labels, and growing it to make room wastes the space on every other render.
+    # Above is also where a reader looks for a time control.
+    fig.update_xaxes(
+        showgrid=False,
+        showline=False,
+        ticks="",
+        row=1,
+        col=1,
+        rangeselector=dict(
+            buttons=list(RANGE_BUTTONS),
+            bgcolor=SURFACE,
+            activecolor="#e8eef8",
+            bordercolor=GRID,
+            borderwidth=1,
+            font=dict(family=FONT, size=11.5, color=INK_SECONDARY),
+            x=0,
+            xanchor="left",
+            y=1.0,
+            yanchor="bottom",
+        ),
+    )
+    fig.update_xaxes(
+        showgrid=False,
+        showline=True,
+        linecolor=BASELINE,
+        linewidth=1,
+        ticks="",
+        tickfont=dict(size=11.5, color=MUTED),
+        row=2,
+        col=1,
+    )
+    # The crosshair: readers aim at a date, never at a 2px line.
+    fig.update_xaxes(
+        showspikes=True, spikemode="across", spikethickness=1,
+        spikecolor=BASELINE, spikedash="solid",
+    )
     return fig
 
 
