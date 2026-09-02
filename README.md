@@ -30,7 +30,43 @@ because the base-rate question needs breadth and it turns out to be affordable.
 | `cftc_disagg_fut` / `_futopt` | physical commodities | producer, swap, managed money, other, non-rept | 652 | 921,145 / 951,510 | 2006-06-13 |
 | `cftc_legacy_fut` / `_futopt` | everything | commercial, non-commercial, non-rept | 951 | 864,453 / 831,831 | **1986-01-15** |
 | `cftc_supp_cit` | 13 ag markets | **index traders (CIT)**, comm ex-CIT, non-comm ex-CIT, non-rept | 13 | 54,544 | 2006-01-03 |
+| `prices` | daily closes for the reported markets | — | 31 symbols | 202,451 | 1990-01-01 |
 | `openrouter_pricing` | token prices | — | 419 models | snapshot-only | 2026-09-01 |
+
+### About the price source, because it is weaker than the rest
+
+`prices` is Yahoo's chart endpoint: no key, **not a documented public API**, and it
+can change or start refusing without notice. That is a real step down from CFTC's
+Socrata endpoint, which is a government publication with a stable schema. It is
+what's used because the better keyless options don't work from here — FRED's
+`fredgraph.csv` times out and Stooq returns a consent page instead of CSV. If it
+breaks, the positioning board keeps working; the price panel is additive and its
+absence is handled.
+
+Two things it guards against, both measured:
+
+- **`range=max` makes the endpoint ignore `interval` and return monthly bars while
+  still answering 200 OK.** `range=max&interval=1wk` on `^VIX` gives 440 points at
+  `dataGranularity: "1mo"`, against 1,915 true weekly points for the same span
+  requested with explicit period bounds. The fetch uses explicit bounds and
+  **asserts** the granularity that came back, so coarser data can't land in a
+  column labelled daily.
+- **Every series is a proxy**, never the exact contract CFTC reports on —
+  the underlying index, a front-month continuous future, or a tracking ETF.
+  `lib/pricemap.py` names the gap per entry. The worst case is VIX: positioning is
+  in VIX *futures* while the price is *spot* VIX, and the two can move in opposite
+  directions because futures carry their own term structure.
+
+Prices are sampled **as of** each report date — the last close at or before the
+Tuesday, via `metrics.asof`, which is `direction="backward"` and tested to be.
+`"nearest"` or a forward fill would put a price that didn't exist yet beside a
+position: look-ahead entering through a join rather than a statistic, which is the
+variety that survives review. Measured: 0 of 846 NASDAQ report dates get a price
+dated after the report; a forward join leaks on 1 row per market.
+
+And note the separate fact that positions are as of Tuesday but published Friday
+15:30 ET. The price beside a position is contemporaneous with the *position*, not
+with the moment you could first have seen it.
 
 The three CFTC families are **not interchangeable**. `legacy` is the only history
 before 2006 but its cohorts are coarse. `disagg` and `tff` partition the modern
@@ -40,7 +76,14 @@ universe between them — commodities and financials — and never overlap.
 
 **One board.** Pick a market, tick which cohorts to group — dealers, asset
 managers, hedge funds, other reportables, small traders — and read their combined
-net position as a share of that market's open interest, against its own history.
+net position as a share of that market's open interest, against its own history,
+with the underlying price on top.
+
+Three stacked panels: price, net as % of open interest, open interest. They share
+one x-axis and never one y-axis — price and percent-of-OI are dimensionally
+unrelated, and putting them on a twin axis would let the scaling choice manufacture
+whatever correlation the author wanted. Stacked panels show the same comparison and
+cannot overstate it.
 
 Two readings reproduce the published figures to the digit, which is how you know
 the pipeline is right rather than merely plausible:
@@ -279,13 +322,17 @@ appears anywhere.
 
 ## What this board cannot tell you
 
-**There is no price series here, so forward returns cannot be computed.** Every
-measure is positioning-only. The base-rates board conditions forward *positioning*
-on today's percentile — a real question, since it tests whether "extreme" is
-mean-reverting or persistent — but it is not a claim about returns and doesn't
-pretend to be. Extending to returns needs one thing: a futures settlement series
-keyed to `cftc_contract_market_code`. That's the highest-value planned addition in
-`sources/__init__.py`.
+**A price series now exists, and that changes what is answerable — but nothing on
+this board answers it yet.** The board *shows* price beside positioning; it does not
+test any relationship between them. Reading a turning point off two stacked panels
+is eyeballing, not evidence, and the eye is very good at finding leads and lags in
+noise. What the `prices` source unlocks is the forward-return version of the parked
+base-rates board — conditioning forward returns on today's positioning percentile,
+with the overlap correction the weekly-observation/multi-week-horizon problem
+demands. That is the next real piece of work, not something already done.
+
+Also: the price is a proxy for the reported contract, not the contract (see above),
+so any return computed from it inherits that gap.
 
 **Positioning is contemporaneous with price, not predictive.** Report the level; do
 not infer a direction without a base-rate test.
