@@ -21,12 +21,11 @@ plotly figures.
 """
 from __future__ import annotations
 
-import sys
-
 import pandas as pd
 import streamlit as st
 
 from lib import cache, charts, metrics
+from lib.ui import caveat_block, freshness
 from panels import Board
 
 _SOURCE = "openrouter_pricing"
@@ -67,25 +66,6 @@ _HALF_THE_QUESTION = (
 )
 
 
-def _app_helpers():
-    """app.py's shared renderers, obtained without re-executing app.py.
-
-    Streamlit execs the entry script as `__main__` and does not alias it in
-    sys.modules under its filename, so `from app import caveat_block` inside a
-    board imports a SECOND copy of app.py and runs its module body again -- a
-    second sidebar radio with identical parameters, which raises
-    StreamlitDuplicateElementId before either helper is bound. So reuse the
-    module already running when it defines them, and keep the documented import
-    as the fallback for when app.py is made import-safe.
-    """
-    main = sys.modules.get("__main__")
-    if main is not None and hasattr(main, "caveat_block"):
-        return main.caveat_block, main.freshness
-    from app import caveat_block, freshness  # noqa: PLC0415
-
-    return caveat_block, freshness
-
-
 def _load() -> pd.DataFrame:
     df = cache.read(_SOURCE)
     df["snapshot_date"] = pd.to_datetime(df["snapshot_date"])
@@ -105,6 +85,12 @@ def _priced(df: pd.DataFrame, col: str) -> pd.DataFrame:
     or promotional tier, and dropping those is not cosmetic: several vendors
     publish a `:free` variant, so a cheapest-per-vendor read that keeps zeros
     reports $0.00 for them and becomes a list of promos.
+
+    NOTE THE ASYMMETRY WITH `_history`, which drops the sentinel but KEEPS the
+    zero. The two uses want different things from the same value: in a
+    cheapest-per-vendor floor a promo tier is noise that buries the vendor's real
+    entry price, while in one named model's series a move to 0 is the datum --
+    it is a repricing to free, the largest cut this source can show.
     """
     v = df[col]
     return df[v.notna() & (v > 0)]
@@ -171,7 +157,27 @@ def _history(df: pd.DataFrame, col: str, leg: str, seeds: list[str]) -> None:
     dates = df["snapshot_date"].drop_duplicates().sort_values()
     wide = df.pivot_table(index="snapshot_date", columns="model_id", values=col)
     wide = wide.reindex(dates)  # a snapshot a model is absent from becomes NaN
-    wide = wide.where(wide > 0)  # sentinels and free tiers must not enter a trend
+    # Mask the ROUTE-TIME SENTINEL ONLY. An earlier version used
+    # `.where(wide > 0)`, which also deleted every 0, and a 0 here is a posted
+    # price: the free or promo tier. That silently truncated a paid -> free
+    # repricing to the snapshots before the cut and then reported the largest
+    # move this source can produce, -100%, as "+0.00 (+0.0%)". It also made the
+    # reverse flip -- a free preview that starts charging -- invisible, since
+    # such a model never accumulated two observations and never reached the
+    # picker. Both flips are live risks: 3 of the 21 zero-priced rows in the
+    # snapshot are ordinary previews, not `:free` variants.
+    wide = wide.mask(wide < 0)
+
+    # An empty cell has three different causes and the pivot cannot tell them
+    # apart. Count rows per (snapshot, model) so the readout can separate "no row
+    # for this id" from "row present, price unusable" instead of filing both, plus
+    # every free tier, under one "missing" label.
+    seen = (
+        df.groupby(["snapshot_date", "model_id"])[col]
+        .size()
+        .unstack("model_id")
+        .reindex(index=dates, columns=wide.columns)
+    )
 
     # charts.Series draws lines only, so a model priced on one snapshot is an
     # invisible trace. Offer only what can actually draw.
@@ -221,18 +227,45 @@ def _history(df: pd.DataFrame, col: str, leg: str, seeds: list[str]) -> None:
         obs = wide[m].dropna()  # endpoints of what was OBSERVED, not of the axis
         first, last = float(obs.iloc[0]), float(obs.iloc[-1])
         move = charts.fmt_change(last - first, "gross", _UNIT)
+        # `first > 0` is load-bearing now that zeros survive: 0 -> paid is an
+        # undefined ratio, so that direction gets absolute units and says so.
         if ratio_ok and first > 0:
             move += f" ({100.0 * (last / first - 1):+.1f}%)"
-        holes = int(wide[m].loc[obs.index[0] : obs.index[-1]].isna().sum())
-        gap = f", {holes} snapshot(s) missing in between" if holes else ""
+        elif ratio_ok and first == 0 and last > 0:
+            move += " (started free, so there is no percent to quote)"
+
+        window = wide[m].loc[obs.index[0] : obs.index[-1]]
+        blank = window.isna()
+        present = seen[m].loc[obs.index[0] : obs.index[-1]].notna()
+        notes = []
+        n_absent = int((blank & ~present).sum())
+        n_unpriced = int((blank & present).sum())
+        if n_absent:
+            notes.append(f"{n_absent} intervening snapshot(s) carry no row for this id")
+        if n_unpriced:
+            notes.append(
+                f"{n_unpriced} intervening snapshot(s) carry a row with no usable price"
+            )
+        free = obs[obs == 0.0]
+        if len(free):
+            notes.append(
+                f"posted free on {len(free)} of {len(obs)} observed snapshots, "
+                f"first {free.index[0].date()}"
+            )
+        tail = f", {'; '.join(notes)}" if notes else ""
         lines.append(
-            f"`{m}` {obs.index[0].date()} -> {obs.index[-1].date()}: {move}{gap}"
+            f"`{m}` {obs.index[0].date()} -> {obs.index[-1].date()}: {move}{tail}"
         )
     st.caption(
         "Change over the observed window, and it is a window, not a trend -- two "
-        "snapshots are a first difference. Gaps are drawn as gaps: a missed "
-        "ingest is missing data, and a model that leaves the endpoint was "
-        "delisted, not repriced. " + "  ·  ".join(lines)
+        "snapshots are a first difference. An empty cell is drawn empty and is "
+        "never a price, but it does not say which of two things happened: the "
+        "endpoint has no archive, so a snapshot with no row for a model id cannot "
+        "be told apart from an ingest run that did not happen, and a row that is "
+        "present with a negative price is the route-time sentinel, not a cut. A 0 "
+        "IS a price -- the free or promo tier -- so it stays in the line and a "
+        "repricing to free reads as the whole -100% it is. "
+        + "  ·  ".join(lines)
     )
 
 
@@ -250,8 +283,6 @@ def _no_history_yet(n_snapshots: int, latest: pd.Timestamp) -> None:
 
 
 def _render() -> None:
-    caveat_block, freshness = _app_helpers()
-
     df = _load()
     n_snapshots = int(df["snapshot_date"].nunique())
     latest = df["snapshot_date"].max()
@@ -266,14 +297,34 @@ def _render() -> None:
 
     st.subheader(f"Cheapest model per vendor, {latest.date()}")
     priced_today = _priced(today, col)
+    # Counted off the frame on screen rather than quoted from a measurement, so
+    # the caption cannot drift from the data. The vendors carrying the sentinel
+    # are read out too, instead of asserting that any negative price is a
+    # dynamic router: that happens to hold for all of today's, and a caption
+    # should not decide what a future negative value means.
+    n_neg = int((today[col] < 0).sum())
+    n_zero = int((today[col] == 0).sum())
+    n_null = int(today[col].isna().sum())
+    neg_vendors = sorted(today.loc[today[col] < 0, "vendor"].dropna().unique())
+    excluded = []
+    if n_neg:
+        excluded.append(
+            f"{n_neg} at a negative posted price, OpenRouter's -1-per-token sentinel "
+            "for a price decided at route time"
+            + (f" (all of them `{'`, `'.join(neg_vendors)}`)" if neg_vendors else "")
+        )
+    if n_zero:
+        excluded.append(f"{n_zero} free or promotional tiers at 0")
+    if n_null:
+        excluded.append(f"{n_null} with no price field at all")
+    lead = f"{len(priced_today)} of {len(today)} models carry a positive {leg} price. "
+    if excluded:
+        lead += "Excluded from this cross-section: " + "; ".join(excluded) + ". "
     st.caption(
-        f"{len(priced_today)} of {len(today)} models carry a positive {leg} price. "
-        f"Excluded: {int((today[col] < 0).sum())} dynamic-router rows priced at -1 "
-        "per token (OpenRouter's sentinel for a price decided at route time), "
-        f"{int((today[col] == 0).sum())} free or promotional tiers at 0, "
-        f"{int(today[col].isna().sum())} with no price field. The zeros matter -- "
-        "several vendors publish a `:free` variant, so keeping them would report "
-        "$0.00 as those vendors' cheapest model."
+        lead + "Zeros are dropped HERE ONLY: several vendors publish a `:free` "
+        "variant, so keeping them would report $0.00 as those vendors' cheapest "
+        "model. They are kept in a named model's series below, where a move to 0 "
+        "is a repricing to free and not noise."
     )
 
     vendor_options = sorted(priced_today["vendor"].dropna().unique())
@@ -288,9 +339,25 @@ def _render() -> None:
 
     # No early return on an empty selection: the caveats below are part of the
     # reading, and a board that drops them on one branch has taught the reader
-    # they are optional.
+    # they are optional. Only the CROSS-SECTION branches here -- the history is
+    # built from `df`, reads nothing off `view`, and used to be nested in this
+    # else, so a degenerate latest snapshot hid a chart that was fine.
+    seeds: list[str] = []
     if view.empty:
-        st.info("No priced models for that selection.")
+        # Unreachable from the filter: every vendor option comes from
+        # `priced_today` and an empty selection falls back to it. So the only way
+        # in is a latest snapshot in which nothing has a positive price on this
+        # leg -- an ingest that wrote empty pricing fields, or an endpoint
+        # outage. Name that, rather than blaming a selection the reader did not
+        # make.
+        st.info(
+            f"No model in the {latest.date()} snapshot posts a positive {leg} "
+            f"price. All {len(today)} rows are at 0 (free or promo), negative "
+            "(the route-time sentinel) or empty, which is an ingest or endpoint "
+            "failure and not a filter -- the vendor list is built from priced "
+            "rows, so no selection can produce this. Earlier snapshots, if any, "
+            "still draw below, and that is where the discontinuity shows."
+        )
     else:
         per_vendor = _per_vendor(view, col)
         _cross_section(per_vendor, leg)
@@ -309,12 +376,13 @@ def _render() -> None:
                 "model on two dates is often not the same product. Compare a named "
                 "model across dates below; compare vendors only within a date."
             )
+        seeds = list(per_vendor["cheapest_model"].astype(str))
 
-        st.subheader("Price over time")
-        if n_snapshots < 2:
-            _no_history_yet(n_snapshots, latest)
-        else:
-            _history(df, col, leg, list(per_vendor["cheapest_model"].astype(str)))
+    st.subheader("Price over time")
+    if n_snapshots < 2:
+        _no_history_yet(n_snapshots, latest)
+    else:
+        _history(df, col, leg, seeds)
 
     st.caption(_HALF_THE_QUESTION)
     # Daily job, so 3 days late is already a hole rather than a slow week.

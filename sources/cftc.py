@@ -170,10 +170,17 @@ COMMON_CAVEATS: tuple[str, ...] = (
     "sum(long) == sum(short) == open interest MINUS spreads. A spread position is "
     "long one expiry and short another, so it belongs to neither side and gets its "
     "own column.",
+    # Do not restate the residual argument here -- render
+    # cftc_spec.RESIDUAL_EXPLANATION, which is the single source of that wording.
+    # An earlier copy of it drifted and contradicted the canonical text on the
+    # same screen, which is exactly the failure a duplicated caption invites.
     "The identities hold to within a few contracts, not exactly, because CFTC "
-    "rounds each published column independently. The leftover is rounding noise -- "
-    "it is negative about as often as positive and never exceeds 4 contracts even "
-    "on markets with 25 million contracts open.",
+    "rounds each published column independently. The leftover is rounding noise, "
+    "not a hidden position bucket -- see the reconciliation on the Integrity "
+    f"board, which states the evidence. Tolerances: "
+    f"{cftc_spec.NET_ZERO_TOL:.0f} contracts on the sum of cohort nets, "
+    f"{cftc_spec.OI_RESIDUAL_TOL:.0f} on the open-interest "
+    "reconciliation.",
     "Markets are keyed on cftc_contract_market_code, never on name: 26-30% of codes "
     "have been renamed at least once, and CFTC shortened names wholesale on "
     "2022-02-08. A name-keyed series silently splits in two there.",

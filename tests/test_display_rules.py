@@ -3,32 +3,64 @@
 lib/charts.py and lib/metrics.py make the correct thing the path of least
 resistance, which is not the same as enforcement: a panel can always `import
 plotly` and build whatever it likes, and a percentile is one keystroke away from
-`.rank(pct=True)`. This file is the mechanism. Three questions:
+`.rank(pct=True)`. This file is the mechanism. Four questions:
 
-  1. Does any panel reach past the library? (static analysis of panels/*.py --
-     direct plotly imports, secondary_y, make_subplots, look-ahead ranking,
-     waivers of the open-interest requirement, a missing BOARD.)
+  1. Does any panel reach past the library? (ast scan of panels/*.py -- a plotly
+     handle however it is spelled, secondary-axis machinery, look-ahead ranking, a
+     self-computed percent change, waivers of the open-interest requirement, a
+     missing BOARD.)
   2. Does the library keep its promises? (behavioural tests of lib/charts --
      rule 4 raises, no twin axes, gaps stay gaps, no percent on a signed kind.)
-  3. Does every discovered board render? (AppTest over panels.all_boards(),
-     plus the assertion that no module failed to import -- a board that silently
-     vanishes looks like a design decision.)
+  3. Does every discovered board actually draw something, and does what it drew
+     obey rules 1 and 4? (AppTest over panels.all_boards(), reading the plotly
+     JSON of every figure the page produced.)
+  4. Do the scans in (1) and (3) still catch anything at all? (negative controls:
+     the shortest source that reaches each banned outcome must be flagged, and the
+     prose that merely names it must not be. Every scan below passes on every
+     panel today, so without these controls a scan that stopped working would look
+     exactly like a codebase that complies.)
 
 It does NOT check that a chart is informative. The rules govern what a figure is
 allowed to claim, not whether the claim is interesting.
 
-The static half is ast/tokenize rather than regex because the banned things are
-syntax: `secondary_y` is a keyword argument in one plotly idiom and a dict key in
-another. Comments and docstrings are exempt from the identifier bans, because the
-house style is to explain a rule beside the code obeying it and lib/charts.py's
-own docstring names `secondary_y` twice. Explaining it is allowed; using it is not.
+WHY AST AND NOT TOKENS OR REGEX
+
+The banned things are syntax. `secondary_y` is a keyword argument in one plotly
+idiom (`add_trace(..., secondary_y=True)`) and a dict key in another
+(`specs=[[{"secondary_y": True}]]`); `yaxis2` arrives either as a keyword to
+`update_layout` or as a key in a `**kwargs` dict. So the scan looks at keyword
+names, attribute names, plain names, and string constants -- but a string constant
+counts only when it is EXACTLY a banned name, because that is how plotly spells
+the option. A caption or a comment that discusses `secondary_y` inside a sentence
+is not a hit: explaining a rule beside the code obeying it is the house style, and
+lib/charts.py's own docstring names `secondary_y` twice.
+
+Two limits of the static half, stated rather than implied. Rule 2: it catches the
+per-observation ranking idioms (`.rank`, `np.percentile`, a centred window) but
+not `s.quantile([0.1, 0.9])` used as a bucket edge -- panels/base_rates.py does
+exactly that, as a description of the whole sample's distribution rather than as a
+rank of one observation, and an ast walk cannot tell those two uses apart. Rule 3:
+it catches `pct_change` but not a hand-rolled `(now - prev) / prev`.
+
+WHY THE RENDER HALF READS tests/fixtures/ AND NEVER data/
+
+The load-bearing reason: app.py writes `st.title(board.title)` BEFORE it checks
+whether the board's sources have any rows, so on a checkout where data/ has not
+been ingested every board falls through to app.py's "not yet ingested" st.info,
+and a smoke test that asserts only "raised nothing, right title" passes having
+drawn nothing at all. The assertions here are therefore positive -- a figure must
+exist, and the skip message must be absent -- and the data they run on is the
+committed 0.5 MB slice, so they hold on a fresh clone and in CI before ingest.
+(To see the guard bite, swap `fixture_data_dir` for conftest's empty
+`tmp_data_dir`.) Second reason, the same one conftest gives for the rest of the
+suite: which boards get covered should not vary with what today's ingest contains.
 """
 from __future__ import annotations
 
 import ast
-import io
+import json
+import re
 import sys
-import tokenize
 from pathlib import Path
 
 import pandas as pd
@@ -40,13 +72,29 @@ if str(ROOT) not in sys.path:  # self-contained: works without a conftest bootst
 
 import panels  # noqa: E402
 import sources  # noqa: E402
-from lib import charts, metrics  # noqa: E402
+from lib import charts, metrics, store  # noqa: E402
 
 PANEL_DIR = ROOT / "panels"
 APP = ROOT / "app.py"
 
-#: Identifiers that only exist to build a second y-axis on one panel (rule 1).
-BANNED_IDENTIFIERS = ("secondary_y", "make_subplots")
+#: Names that exist only to build, or to retrofit, a second y-axis (rule 1).
+#: `overlaying` and `yaxis<n>` are the two halves of the shortest bypass there is:
+#: take a figure charts.stacked() already built and
+#: `update_layout(yaxis2=dict(overlaying="y", side="right"))`.
+TWIN_AXIS_NAMES = frozenset({"secondary_y", "make_subplots", "overlaying"})
+TWIN_AXIS_PATTERN = re.compile(r"^yaxis\d+$")
+
+#: Live plotly handles that lib/charts.py holds at module level. `from lib.charts
+#: import go` is a plotly import wearing a different name, and `charts.go` is the
+#: same handle by attribute -- neither one mentions plotly.
+PLOTLY_HANDLES = frozenset({"go", "px", "graph_objects", "graph_objs", "subplots", "make_subplots"})
+CHARTS_MODULES = frozenset({"charts", "lib.charts"})
+
+#: Whole-sample statistics that rank an observation against data that did not
+#: exist yet. `quantile` is here only under a numpy/scipy handle: the pandas
+#: method of the same name has a legitimate whole-sample use (see module docstring).
+NUMPY_NAMES = frozenset({"np", "numpy", "scipy", "stats"})
+NUMPY_LOOKAHEAD = frozenset({"percentile", "quantile", "percentileofscore"})
 
 
 def panel_files() -> list[Path]:
@@ -62,106 +110,118 @@ def _tree(path: Path) -> ast.Module:
     return ast.parse(path.read_text(), filename=str(path))
 
 
-DOC_OWNERS = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-
-
-def _docstring_lines(tree: ast.Module) -> set[int]:
-    """Line numbers covered by a module/class/function docstring."""
-    lines: set[int] = set()
-    for node in ast.walk(tree):
-        body = getattr(node, "body", []) if isinstance(node, DOC_OWNERS) else []
-        head = body[0] if body else None
-        if isinstance(head, ast.Expr) and isinstance(getattr(head.value, "value", None), str):
-            lines.update(range(head.lineno, (head.end_lineno or head.lineno) + 1))
-    return lines
-
-
-def _code_tokens(path: Path):
-    """Tokens that are code: comments and docstrings dropped, other strings kept.
-
-    Non-docstring strings stay in scope because plotly's own way to ask for a twin
-    axis is a string key -- specs=[[{"secondary_y": True}]].
-    """
-    skip = _docstring_lines(_tree(path))
-    for tok in tokenize.generate_tokens(io.StringIO(path.read_text()).readline):
-        if tok.type == tokenize.COMMENT:
-            continue
-        if tok.type == tokenize.STRING and tok.start[0] in skip:
-            continue
-        yield tok
-
-
 def _where(path: Path, hits) -> str:
     return "; ".join(f"{path.name}:{line} {what}" for line, what in hits)
 
 
-# --------------------------------------------------------------------------- #
-# 1. Static analysis of panels/
-# --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("path", panel_files(), ids=lambda p: p.name)
-def test_panel_does_not_import_plotly(path: Path) -> None:
-    """Rule 1. Routing every figure through lib.charts is what makes a second
-    y-axis unreachable; a panel holding its own plotly handle undoes that."""
-    def is_plotly(name: str) -> bool:
-        return name == "plotly" or name.startswith("plotly.")
-
-    hits = []
-    for node in ast.walk(_tree(path)):
-        if isinstance(node, ast.Import):
-            hits += [(node.lineno, f"import {a.name}") for a in node.names if is_plotly(a.name)]
-        elif isinstance(node, ast.ImportFrom) and is_plotly(node.module or ""):
-            hits.append((node.lineno, f"from {node.module} import ..."))
-    assert not hits, (
-        f"panel imports plotly directly -- {_where(path, hits)}. Build figures with "
-        "lib.charts.stacked()/ranked_bars(); if charts.py genuinely cannot express "
-        "the figure, extend charts.py rather than bypassing it."
-    )
-
-
-@pytest.mark.parametrize("path", panel_files(), ids=lambda p: p.name)
-def test_panel_has_no_secondary_axis_machinery(path: Path) -> None:
-    """Rule 1. Two series on one panel with two y-scales lets the author pick the
-    scaling that makes a correlation look however they want, invisibly."""
-    hits = [
-        (tok.start[0], tok.string)
-        for tok in _code_tokens(path)
-        if any(b in tok.string for b in BANNED_IDENTIFIERS)
-    ]
-    assert not hits, (
-        f"panel uses secondary-axis machinery -- {_where(path, hits)}. "
-        "charts.stacked() gives independent subplots sharing only the x-axis, "
-        "which is the only comparison this board is allowed to draw."
-    )
+def _line(node: ast.AST) -> int:
+    return getattr(node, "lineno", 0)
 
 
 def _is_literal(node: ast.expr | None, value: bool) -> bool:
     return isinstance(node, ast.Constant) and node.value is value
 
 
-@pytest.mark.parametrize("path", board_files(), ids=lambda p: p.name)
-def test_panel_has_no_lookahead_ranking(path: Path) -> None:
-    """Rule 2. Both of these rank an observation against data that did not exist
-    yet: .rank(pct=True) uses the whole sample, a centred window straddles t."""
+def _dotted(node: ast.expr) -> str:
+    """The dotted source of an attribute chain, or "" if it is not one."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return ""
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _called_name(node: ast.Call) -> str:
+    f = node.func
+    return f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+
+
+# --------------------------------------------------------------------------- #
+# The scans. Each returns [(lineno, what)] so the negative controls below can
+# call it on a source string instead of on a file.
+# --------------------------------------------------------------------------- #
+def plotly_handle_hits(tree: ast.Module) -> list[tuple[int, str]]:
+    """Rule 1. Any live plotly object a panel could build a figure with."""
+    def is_plotly(name: str) -> bool:
+        return name == "plotly" or name.startswith("plotly.")
+
     hits = []
-    for node in ast.walk(_tree(path)):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            hits += [(node.lineno, f"import {a.name}") for a in node.names if is_plotly(a.name)]
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if is_plotly(module):
+                hits.append((node.lineno, f"from {module} import ..."))
+            elif module in CHARTS_MODULES:
+                hits += [
+                    (node.lineno, f"from {module} import {a.name} (a plotly handle)")
+                    for a in node.names
+                    if a.name in PLOTLY_HANDLES
+                ]
+        elif isinstance(node, ast.Attribute) and node.attr in PLOTLY_HANDLES:
+            owner = _dotted(node.value)
+            if owner in CHARTS_MODULES:
+                hits.append((node.lineno, f"{owner}.{node.attr} (a plotly handle)"))
+    return hits
+
+
+def twin_axis_hits(tree: ast.Module) -> list[tuple[int, str]]:
+    """Rule 1. Secondary-axis machinery, in every spelling that reaches plotly."""
+    def banned(name: str) -> bool:
+        return name in TWIN_AXIS_NAMES or bool(TWIN_AXIS_PATTERN.match(name))
+
+    hits = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.keyword) and node.arg and banned(node.arg):
+            hits.append((_line(node) or _line(node.value), f"{node.arg}= keyword argument"))
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and banned(node.value):
+            # Exactly the name, so a string used as a key or an attribute name --
+            # prose that merely mentions it is a longer string and does not match.
+            hits.append((node.lineno, f"{node.value!r} used as a key or name"))
+        elif isinstance(node, ast.Name) and banned(node.id):
+            hits.append((node.lineno, node.id))
+        elif isinstance(node, ast.Attribute) and banned(node.attr):
+            hits.append((node.lineno, f".{node.attr}"))
+    return hits
+
+
+def lookahead_hits(tree: ast.Module) -> list[tuple[int, str]]:
+    """Rule 2. Ranking an observation against data that did not exist yet."""
+    hits = []
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        f = node.func
-        name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+        name = _called_name(node)
         kwargs = {k.arg: k.value for k in node.keywords if k.arg}
-        if name == "rank" and "pct" in kwargs:
-            hits.append((node.lineno, ".rank(pct=...) ranks against the full sample"))
-        centred = "center" in kwargs and not _is_literal(kwargs["center"], False)
-        if name in ("rolling", "expanding") and centred:
-            hits.append((node.lineno, f"{name}(center=...) straddles each date"))
-    assert not hits, (
-        f"look-ahead ranking -- {_where(path, hits)}. lib.metrics is causal by "
-        "construction: expanding_percentile / trailing_percentile / trailing_zscore."
-    )
+        if name == "rank":
+            how = "pct=..." if "pct" in kwargs else "no window"
+            hits.append((node.lineno, f".rank({how}) ranks against the full sample"))
+        if name in ("rolling", "expanding"):
+            if "center" in kwargs and not _is_literal(kwargs["center"], False):
+                hits.append((node.lineno, f"{name}(center=...) straddles each date"))
+        if name in NUMPY_LOOKAHEAD and isinstance(node.func, ast.Attribute):
+            owner = _dotted(node.func.value)
+            if owner.split(".")[0] in NUMPY_NAMES:
+                hits.append((node.lineno, f"{owner}.{name}() over the whole sample"))
+    return hits
 
 
-@pytest.mark.parametrize("path", board_files(), ids=lambda p: p.name)
-def test_panel_never_waives_the_open_interest_requirement(path: Path) -> None:
+def percent_change_hits(tree: ast.Module) -> list[tuple[int, str]]:
+    """Rule 3. A percent change computed in the panel bypasses the formatting gate
+    in charts.fmt_change, which is the only thing that knows whether the quantity
+    can change sign."""
+    return [
+        (node.lineno, "pct_change() -- route the change through charts.fmt_change")
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _called_name(node) == "pct_change"
+    ]
+
+
+def open_interest_waiver_hits(tree: ast.Module) -> list[tuple[int, str]]:
     """Rule 4, checked more strictly than charts.stacked() enforces it.
 
     The runtime rule is conditional -- the waiver is only wrong when the figure
@@ -172,7 +232,7 @@ def test_panel_never_waives_the_open_interest_requirement(path: Path) -> None:
     and loses nothing by leaving the default alone.
     """
     hits = []
-    for node in ast.walk(_tree(path)):
+    for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             for k in node.keywords:
                 if k.arg == "require_open_interest" and not _is_literal(k.value, True):
@@ -180,6 +240,65 @@ def test_panel_never_waives_the_open_interest_requirement(path: Path) -> None:
         # A kwargs dict is the other route in: stacked(**{"require_...": False}).
         elif isinstance(node, ast.Constant) and node.value == "require_open_interest":
             hits.append((node.lineno, "require_open_interest passed as a dict key"))
+    return hits
+
+
+# --------------------------------------------------------------------------- #
+# 1. Static analysis of panels/
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("path", panel_files(), ids=lambda p: p.name)
+def test_panel_does_not_import_plotly(path: Path) -> None:
+    """Rule 1. Routing every figure through lib.charts is what makes a second
+    y-axis unreachable; a panel holding its own plotly handle undoes that --
+    including a handle borrowed from lib.charts, which re-exports two of them."""
+    hits = plotly_handle_hits(_tree(path))
+    assert not hits, (
+        f"panel holds a plotly handle -- {_where(path, hits)}. Build figures with "
+        "lib.charts.stacked()/ranked_bars(); if charts.py genuinely cannot express "
+        "the figure, extend charts.py rather than bypassing it."
+    )
+
+
+@pytest.mark.parametrize("path", panel_files(), ids=lambda p: p.name)
+def test_panel_has_no_secondary_axis_machinery(path: Path) -> None:
+    """Rule 1. Two series on one panel with two y-scales lets the author pick the
+    scaling that makes a correlation look however they want, invisibly."""
+    hits = twin_axis_hits(_tree(path))
+    assert not hits, (
+        f"panel uses secondary-axis machinery -- {_where(path, hits)}. "
+        "charts.stacked() gives independent subplots sharing only the x-axis, "
+        "which is the only comparison this board is allowed to draw."
+    )
+
+
+@pytest.mark.parametrize("path", board_files(), ids=lambda p: p.name)
+def test_panel_has_no_lookahead_ranking(path: Path) -> None:
+    """Rule 2. Every one of these ranks an observation against data that did not
+    exist yet: `.rank()` uses the whole sample with or without pct=, a centred
+    window straddles t, np.percentile sees the end of the series from the start."""
+    hits = lookahead_hits(_tree(path))
+    assert not hits, (
+        f"look-ahead ranking -- {_where(path, hits)}. lib.metrics is causal by "
+        "construction: expanding_percentile / trailing_percentile / trailing_zscore."
+    )
+
+
+@pytest.mark.parametrize("path", board_files(), ids=lambda p: p.name)
+def test_panel_does_not_compute_its_own_percent_change(path: Path) -> None:
+    """Rule 3. charts.fmt_change is where a kind is checked before a percent is
+    printed; a panel calling pct_change() itself has already decided the answer."""
+    hits = percent_change_hits(_tree(path))
+    assert not hits, (
+        f"panel computes a percent change itself -- {_where(path, hits)}. A net "
+        "position going -100,640 -> -96,727 is '+3,913 contracts, less short'; as "
+        "'+3.9%' it reads as growth while the position shrank toward zero."
+    )
+
+
+@pytest.mark.parametrize("path", board_files(), ids=lambda p: p.name)
+def test_panel_never_waives_the_open_interest_requirement(path: Path) -> None:
+    """Rule 4. See open_interest_waiver_hits for why the ban is unconditional."""
+    hits = open_interest_waiver_hits(_tree(path))
     assert not hits, (
         f"open-interest requirement waived -- {_where(path, hits)}. A cohort's "
         "share of OI can rise because the cohort bought or because OI fell, and "
@@ -198,6 +317,57 @@ def test_panel_defines_module_level_board(path: Path) -> None:
     assert "BOARD" in names, (
         f"{path.name} defines no module-level BOARD, so panels._discover() imports "
         "it, finds nothing to register and drops it without an error."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 1b. Negative controls for the scans above.
+#
+# Every scan passes on every panel in the repo, which is indistinguishable from a
+# scan that has stopped working. Each case below is the shortest source that
+# reaches the banned outcome -- the `charts.go` and `update_layout` cases are the
+# routes to a twin axis that an earlier version of this file did not see -- plus
+# the near-misses that must NOT be flagged, because a false positive on prose is
+# how a scan gets deleted.
+# --------------------------------------------------------------------------- #
+STATIC_CONTROLS = [
+    ("import plotly", "import plotly.graph_objects as go", plotly_handle_hits, True),
+    ("from plotly", "from plotly.subplots import make_subplots", plotly_handle_hits, True),
+    ("charts re-export", "from lib.charts import go", plotly_handle_hits, True),
+    ("charts attribute", "from lib import charts\ncharts.go.Figure()", plotly_handle_hits, True),
+    ("charts used properly", "from lib import charts\ncharts.stacked([p])", plotly_handle_hits, False),
+    ("secondary_y kwarg", "fig.add_trace(t, secondary_y=True)", twin_axis_hits, True),
+    ("secondary_y spec key", 'make_subplots(specs=[[{"secondary_y": True}]])', twin_axis_hits, True),
+    ("retrofit via update_layout",
+     'fig.update_layout(yaxis2=dict(overlaying="y", side="right"))', twin_axis_hits, True),
+    ("retrofit via kwargs dict",
+     'fig.update_layout(**{"yaxis2": {"overlaying": "y"}})', twin_axis_hits, True),
+    ("prose naming the rule",
+     'st.caption("charts.stacked() never builds a secondary_y axis.")', twin_axis_hits, False),
+    ("rank(pct=True)", "df[\"p\"] = s.rank(pct=True)", lookahead_hits, True),
+    ("bare rank()", "df[\"p\"] = s.rank() / len(s)", lookahead_hits, True),
+    ("np.percentile", "hi = np.percentile(s, 90)", lookahead_hits, True),
+    ("np.quantile", "hi = np.quantile(s, 0.9)", lookahead_hits, True),
+    ("centred window", "m = s.rolling(52, center=True).mean()", lookahead_hits, True),
+    ("trailing window", "m = s.rolling(52).mean()", lookahead_hits, False),
+    ("pandas quantile", "edges = s.quantile([0.1, 0.9])", lookahead_hits, False),
+    ("pct_change", 'st.metric("net", f"{net.pct_change().iloc[-1]:.1%}")', percent_change_hits, True),
+    ("fmt_change", 'charts.fmt_change(d, "net", "contracts")', percent_change_hits, False),
+    ("waiver", "charts.stacked(ps, require_open_interest=False)", open_interest_waiver_hits, True),
+    ("no waiver", "charts.stacked(ps)", open_interest_waiver_hits, False),
+]
+
+
+@pytest.mark.parametrize(
+    "source,scan,should_flag",
+    [(src, scan, flag) for _, src, scan, flag in STATIC_CONTROLS],
+    ids=[label for label, *_ in STATIC_CONTROLS],
+)
+def test_static_scan_flags_what_it_claims_to(source, scan, should_flag) -> None:
+    hits = scan(ast.parse(source))
+    assert bool(hits) == should_flag, (
+        f"{scan.__name__} {'missed' if should_flag else 'wrongly flagged'} "
+        f"{source!r}: hits={hits}"
     )
 
 
@@ -224,15 +394,12 @@ def test_stacked_requires_open_interest_beside_a_share_of_it(share_kind: str) ->
 def test_stacked_gives_one_y_axis_per_panel_and_no_twin() -> None:
     """Rule 1, verified on the object rather than on the source that built it."""
     fig = charts.stacked([_panel("net"), _panel("open_interest"), _panel("share")])
-    layout = fig.to_plotly_json()["layout"]
-    yaxes = {k: v for k, v in layout.items() if k.startswith("yaxis")}
-    assert len(yaxes) == 3, f"expected one y-axis per panel, got {sorted(yaxes)}"
-
-    twin = [k for k, v in yaxes.items() if v.get("overlaying") or v.get("side") == "right"]
-    assert not twin, f"twinned y-axis in a stacked figure: {twin}"
-
+    spec = fig.to_plotly_json()
+    assert len({k for k in spec["layout"] if k.startswith("yaxis")}) == 3
+    problems = twin_axis_problems(spec)
+    assert not problems, problems
     # And no two traces share a scale, which is the same rule seen from the data.
-    assert len({t["yaxis"] for t in fig.to_plotly_json()["data"]}) == 3
+    assert len({t["yaxis"] for t in spec["data"]}) == 3
 
 
 def test_every_trace_renders_a_gap_as_a_gap() -> None:
@@ -251,6 +418,25 @@ def test_fmt_change_refuses_a_percent_for_a_signed_kind(kind: str) -> None:
     out = charts.fmt_change(-96_727 - -100_640, kind, "contracts")
     assert "%" not in out, f"kind={kind!r} formatted as a percent: {out}"
     assert "3,913" in out
+    # The same refusal at a magnitude that is in range for the two signed kinds
+    # that are ratios rather than contract counts (purity lives in [-1, 1]), so
+    # this test is not resting entirely on a delta three of the five kinds could
+    # carry and two of them arithmetically could not.
+    small = charts.fmt_change(0.42, kind, "of open interest")
+    assert "%" not in small, f"kind={kind!r} formatted as a percent: {small}"
+
+
+def test_fmt_change_keeps_a_percent_and_its_resolution_for_an_unsigned_kind() -> None:
+    """The permitted half of the gate, asserted directly rather than inferred from
+    a bar colour: the signed cases above would also pass if fmt_change returned
+    one string for every kind."""
+    assert charts.fmt_change(0.1234, "share", "%") == "+0.12 %"
+    # Resolution follows the QUANTITY, not the sign. A contract count is an
+    # integer, so it gets no decimals whichever branch of the gate it takes --
+    # this used to render '+3,913.00 contracts'. The mirror bug was worse: the
+    # signed branch used zero decimals, so a +0.1555pp share move printed '+0'.
+    assert charts.fmt_change(-96_727 - -100_640, "gross", "contracts") == "+3,913 contracts"
+    assert charts.fmt_change(0.1555, "net_share", "pp") == "+0.16 pp"
 
 
 def test_fmt_change_raises_on_an_unknown_kind() -> None:
@@ -258,6 +444,11 @@ def test_fmt_change_raises_on_an_unknown_kind() -> None:
     being unclassified."""
     with pytest.raises(ValueError, match="unknown quantity kind"):
         charts.fmt_change(1.0, "basis_points", "bp")
+
+
+def test_fmt_change_does_not_render_a_nan_as_a_figure() -> None:
+    """Rule 3 with the value metrics.flow actually returns for a broken span."""
+    assert "nan" not in charts.fmt_change(float("nan"), "flow", "contracts").lower()
 
 
 def test_ranked_bars_diverges_only_for_a_signed_kind() -> None:
@@ -280,16 +471,92 @@ def test_ranked_bars_diverges_only_for_a_signed_kind() -> None:
         (-10, 10, "flipped to net long"),
         (10, -10, "flipped to net short"),
         (5, 5, "unchanged"),
+        # metrics.flow returns NaN for a span that is not one week, so both ends
+        # of this arrive NaN in practice. Saying nothing is the right answer.
+        (float("nan"), 10, ""),
+        (10, float("nan"), ""),
     ],
 )
 def test_signed_direction(previous: float, current: float, expected: str) -> None:
     assert charts.signed_direction(previous, current) == expected
 
 
+def test_signed_direction_of_a_position_closed_to_zero() -> None:
+    """Landing on zero has no side, so a comparative is unreadable there.
+
+    Was an xfail: both directions returned 'less flat', grading a closed position
+    by magnitude against a side it no longer has. The mirror case matters too --
+    leaving zero is an opening, not a 'more'.
+    """
+    assert charts.signed_direction(-5, 0) == "closed to flat"
+    assert charts.signed_direction(5, 0) == "closed to flat"
+    assert charts.signed_direction(0, -5) == "opened net short"
+    assert charts.signed_direction(0, 5) == "opened net long"
+    # The ordinary cases must still read correctly, including the one this whole
+    # helper exists for: a short position shrinking is "less short", not "more".
+    assert charts.signed_direction(-100_640, -96_727) == "less short"
+    assert charts.signed_direction(-10, 10) == "flipped to net long"
+    assert charts.signed_direction(5, 5) == "unchanged"
+
+
 # --------------------------------------------------------------------------- #
-# 3. Every discovered board renders
+# 3. Every discovered board renders, and what it rendered obeys the rules
 # --------------------------------------------------------------------------- #
 BOARDS = panels.all_boards()
+
+
+def _axis_title(axis: dict) -> str:
+    title = axis.get("title") if isinstance(axis, dict) else None
+    if isinstance(title, dict):
+        title = title.get("text")
+    return title or ""
+
+
+def twin_axis_problems(spec: dict) -> list[str]:
+    """Rule 1 read off a rendered figure rather than off the source that built it.
+
+    Closes the gap the static scan cannot: a panel that post-processes a figure
+    charts.stacked() handed back, through any indirection an ast walk loses track
+    of, still has to put the second scale in this JSON.
+    """
+    layout = spec.get("layout", {})
+    data = spec.get("data", [])
+    yaxes = {k: v for k, v in layout.items() if k.startswith("yaxis")}
+    problems = [
+        f"{k} is overlaid or right-hand: overlaying={v.get('overlaying')!r} side={v.get('side')!r}"
+        for k, v in yaxes.items()
+        if isinstance(v, dict) and (v.get("overlaying") or v.get("side") == "right")
+    ]
+    scales = {d.get("yaxis", "y") for d in data}
+    if data and len(scales) > max(len(yaxes), 1):
+        problems.append(f"{len(scales)} trace scales {sorted(scales)} but {len(yaxes)} y-axes")
+    return problems
+
+
+def open_interest_problems(spec: dict) -> list[str]:
+    """Rule 4 on a one-panel figure -- the case charts.stacked() cannot police.
+
+    stacked() raises when a share-of-OI panel appears with no OI panel, and
+    test_stacked_requires_open_interest_beside_a_share_of_it covers that. A ranked
+    bar chart has no panels, so ranked_bars() has no equivalent gate and the only
+    place open interest can be is the hover. panels/crowding.py does put it there
+    ("<n> spreads of <oi> OI"); nothing checked that it did until here.
+    """
+    layout = spec.get("layout", {})
+    if len({k for k in layout if k.startswith("yaxis")}) > 1:
+        return []  # multi-panel: stacked() enforced this when it built the figure
+    axes = [_axis_title(v) for k, v in layout.items() if k.startswith(("xaxis", "yaxis"))]
+    share_axes = [t for t in axes if "%" in t and "open interest" in t.lower()]
+    if not share_axes:
+        return []
+    for i, trace in enumerate(spec.get("data", [])):
+        hover = " ".join(str(c) for c in (trace.get("customdata") or []))
+        if not re.search(r"open interest|\bOI\b", hover, re.I):
+            return [
+                f"axis {share_axes} plots a share of open interest but trace {i} "
+                "never states the open interest it is a share of"
+            ]
+    return []
 
 
 @pytest.mark.parametrize(
@@ -312,24 +579,63 @@ def _label_for(options: list[str], title: str) -> str:
     return matches[0]
 
 
-def _fresh_app():
-    """A run of the real app.py, timeout generous because boards scan 4.1M rows."""
+def _fresh_app(data_dir: Path):
+    """A run of the real app.py against a given data directory.
+
+    Takes the directory rather than reading store.DATA_DIR itself so a caller that
+    forgot to request `fixture_data_dir` fails here instead of silently reading
+    data/ -- see the module docstring for why that matters.
+    """
     from streamlit.testing.v1 import AppTest
 
+    assert store.DATA_DIR == data_dir, (
+        f"lib.store.DATA_DIR is {store.DATA_DIR}, not {data_dir}: request the "
+        "fixture_data_dir fixture so this renders the committed slice"
+    )
     at = AppTest.from_file(str(APP), default_timeout=300)
     at.run()
     return at
 
 
-def test_app_runs_clean_before_any_selection() -> None:
+def _figure_specs(at) -> list[dict]:
+    """The plotly JSON of every chart on the page.
+
+    AppTest has no typed accessor for st.plotly_chart, but the untyped
+    at.get("plotly_chart") returns the elements and each carries the figure it was
+    handed as `proto.spec`.
+    """
+    return [json.loads(el.proto.spec) for el in at.get("plotly_chart")]
+
+
+def _assert_the_board_actually_drew_something(at, what: str) -> list[dict]:
+    """The anti-vacuity guard, and the reason the render tests read fixtures.
+
+    app.py emits st.title(board.title) before it checks for data, so "no exception
+    and the right title" is also what a board that never ran looks like.
+
+    Both halves are needed. The skip message covers the six boards that declare a
+    source; the Integrity board declares none (it reconciles whatever is present)
+    so app.py never skips it and it prints its own "nothing to reconcile" notice
+    instead -- only "a figure exists" catches that one.
+    """
+    skipped = [i.value for i in at.info if "not been ingested" in i.value]
+    assert not skipped, f"{what} never ran -- app.py skipped it for missing data: {skipped}"
+    specs = _figure_specs(at)
+    assert specs, f"{what} rendered no figure, so this case asserted nothing"
+    return specs
+
+
+def test_app_runs_clean_before_any_selection(fixture_data_dir) -> None:
     """The first load, which renders whichever board sorts first."""
-    at = _fresh_app()
+    at = _fresh_app(fixture_data_dir)
     assert not at.exception, [str(e.value) for e in at.exception]
+    _assert_the_board_actually_drew_something(at, "the default board")
 
 
 @pytest.mark.parametrize("board", BOARDS, ids=lambda b: b.id)
-def test_board_renders_without_exception(board) -> None:
-    """Selects each board in the real app and asserts it raised nothing.
+def test_board_renders_without_exception(board, fixture_data_dir) -> None:
+    """Selects each board in the real app, asserts it raised nothing, drew
+    something, and that what it drew obeys rules 1 and 4.
 
     Parameterised over the registry, so a board added later is covered here
     without editing this file. Only the post-selection run is asserted on: the
@@ -339,7 +645,7 @@ def test_board_renders_without_exception(board) -> None:
     test_app_runs_clean_before_any_selection rather than every case at once, which
     would hide which file is at fault.
     """
-    at = _fresh_app()
+    at = _fresh_app(fixture_data_dir)
     radio = at.sidebar.radio[0]
     radio.set_value(_label_for(list(radio.options), board.title)).run()
     raised = [str(e.value) for e in at.exception]
@@ -348,4 +654,80 @@ def test_board_renders_without_exception(board) -> None:
     # would be re-testing the default board and reporting success.
     assert board.title in [t.value for t in at.title], (
         f"selected {board.title!r} but the page rendered {[t.value for t in at.title]}"
+    )
+    specs = _assert_the_board_actually_drew_something(at, f"board {board.id!r}")
+    problems = [
+        f"figure {i}: {p}"
+        for i, spec in enumerate(specs)
+        for p in twin_axis_problems(spec) + open_interest_problems(spec)
+    ]
+    assert not problems, f"board {board.id!r} broke a display rule on screen: {problems}"
+
+
+#: Negative controls for the two figure scans, for the same reason as the static
+#: ones: every figure the boards draw today passes both, so a scan that stopped
+#: working would be invisible. Hand-built specs, because producing a twin axis
+#: needs the plotly call this repo does not allow a panel to make.
+FIGURE_CONTROLS = [
+    (
+        "overlaid right-hand axis",
+        {
+            "layout": {"yaxis": {}, "yaxis2": {"overlaying": "y", "side": "right"}},
+            "data": [{"yaxis": "y"}, {"yaxis": "y2"}],
+        },
+        twin_axis_problems,
+        True,
+    ),
+    (
+        "more trace scales than axes",
+        {"layout": {"yaxis": {}}, "data": [{"yaxis": "y"}, {"yaxis": "y2"}]},
+        twin_axis_problems,
+        True,
+    ),
+    (
+        "one scale per panel",
+        {"layout": {"yaxis": {}, "yaxis2": {}}, "data": [{"yaxis": "y"}, {"yaxis": "y2"}]},
+        twin_axis_problems,
+        False,
+    ),
+    (
+        "share of OI with no OI in the hover",
+        {
+            "layout": {"xaxis": {"title": {"text": "% of open interest"}}, "yaxis": {}},
+            "data": [{"type": "bar", "customdata": ["40.2% of the side"]}],
+        },
+        open_interest_problems,
+        True,
+    ),
+    (
+        "share of OI with OI in the hover",
+        {
+            "layout": {"xaxis": {"title": {"text": "% of open interest"}}, "yaxis": {}},
+            "data": [{"type": "bar", "customdata": ["34,081 spreads of 322,190 OI"]}],
+        },
+        open_interest_problems,
+        False,
+    ),
+    (
+        "not a share of OI at all",
+        {
+            "layout": {"xaxis": {"title": {"text": "contracts"}}, "yaxis": {}},
+            "data": [{"type": "bar", "customdata": ["net -67,709 to -44,316"]}],
+        },
+        open_interest_problems,
+        False,
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "spec,scan,should_flag",
+    [(spec, scan, flag) for _, spec, scan, flag in FIGURE_CONTROLS],
+    ids=[label for label, *_ in FIGURE_CONTROLS],
+)
+def test_figure_scan_flags_what_it_claims_to(spec, scan, should_flag) -> None:
+    problems = scan(spec)
+    assert bool(problems) == should_flag, (
+        f"{scan.__name__} {'missed' if should_flag else 'wrongly flagged'} "
+        f"{spec}: {problems}"
     )

@@ -4,8 +4,9 @@ and whether the open interest underneath it was created or merely changed hands.
 The drill-down. What it answers: what the selected cohorts hold, in contracts or
 as a share of the DIRECTIONAL open interest (ex-spreads) that can take a side;
 whether that level is unusual against its own past, in two windows -- trailing
-three years and expanding-within-segment -- which disagree exactly when the
-market's behaviour has changed regime; whether the position moved because the
+1,095 days and expanding-within-segment, both blank until the window they claim
+is actually occupied -- which disagree exactly when the market's behaviour has
+changed regime; whether the position moved because the
 cohort traded or because open interest moved underneath it; and where this code's
 history is cut, by a hole or by a contract re-specification.
 
@@ -23,19 +24,28 @@ What it refuses:
 """
 from __future__ import annotations
 
-import sys
-
 import numpy as np
 import pandas as pd
 import streamlit as st
 
 from lib import cache, cftc_spec, charts, metrics, segments, universe
+from lib.ui import caveat_block, freshness, market_last_print
 from panels import Board
 
 #: A segment's first expanding percentile is 100.0 by construction (max of a
 #: one-element set) and a re-basing restarts that warm-up mid-history, so blank
 #: it. 26 reports is half a year of weeklies.
 _MIN_EXPANDING = 26
+
+#: The trailing window, and the occupancy metrics.trailing_percentile requires
+#: before it publishes. Passed EXPLICITLY rather than left to the library
+#: defaults so the caption can recompute the report count it claims instead of
+#: quoting one: 60% of the 156 reports a weekly cadence puts in 1,095 days is 94,
+#: which is why a segment stays blank for ~two years after a re-basing.
+_TRAIL_DAYS = 1095
+_TRAIL_FRAC = 0.6
+_TRAIL_NOMINAL = int(_TRAIL_DAYS / metrics.DAYS_PER_REPORT)
+_TRAIL_REPORTS = int(np.ceil(_TRAIL_FRAC * _TRAIL_NOMINAL))
 
 #: Landing cohort per family -- the one whose net is conventionally read as
 #: positioning. Never "all cohorts": every contract has two sides, so the sum
@@ -44,22 +54,9 @@ _DEFAULT_COHORT = {"tff": "lev_money", "disagg": "m_money", "legacy": "noncomm",
 
 _CONTRACTS = "contracts"
 _SHARE = "% of directional open interest"
-
-
-def _app_helpers():
-    """app.py's shared renderers, obtained without re-executing app.py.
-
-    Streamlit execs the entry script as `__main__` and does not also alias it as
-    `app`, so a plain `from app import caveat_block` imports a SECOND copy and
-    re-runs app.py's module body -- sidebar radio included, which then dies with
-    StreamlitDuplicateElementId. Verified: this board raises on first render.
-    """
-    main = sys.modules.get("__main__")
-    if main is not None and hasattr(main, "caveat_block"):
-        return main.caveat_block, main.freshness
-    from app import caveat_block, freshness  # noqa: PLC0415
-
-    return caveat_block, freshness
+#: A change in a share is a difference of two percentages, so its unit is
+#: percentage points -- never "%", which reads as a percent change of the share.
+_PP = "pp"
 
 
 def _f(s: pd.Series) -> pd.Series:
@@ -116,7 +113,9 @@ def _ranks(f: pd.DataFrame, col: str) -> tuple[pd.Series, pd.Series]:
     trail = pd.Series(np.nan, index=f.index)
     expand = pd.Series(np.nan, index=f.index)
     for _, g in f.groupby(f["segment"].to_numpy(), sort=True):
-        trail.loc[g.index] = metrics.trailing_percentile(g[col], g["date"])
+        trail.loc[g.index] = metrics.trailing_percentile(
+            g[col], g["date"], window_days=_TRAIL_DAYS, min_obs_frac=_TRAIL_FRAC
+        )
         expand.loc[g.index] = metrics.expanding_percentile(g[col], min_history=_MIN_EXPANDING)
     return trail, expand
 
@@ -125,6 +124,46 @@ def _fmt_level(v: float, contracts: bool) -> str:
     if pd.isna(v):
         return "no data"
     return f"{v:,.0f}" if contracts else f"{v:,.2f}"
+
+
+def _direction(prev: float, cur: float, kind: str) -> str:
+    """What moved, in words, without asserting a direction the quantity lacks.
+
+    charts.signed_direction says "more long" / "less long", which is only true of
+    a quantity that carries a side. Gross is long PLUS short: on 20974+ leveraged
+    funds the last week's gross fell 11,659 contracts while the long side ROSE
+    5,867 (long 40,706 -> 46,573, short 108,415 -> 90,889), so "less long" would
+    be the opposite of what the longs did. Unsigned kinds get a size word instead.
+    """
+    if pd.isna(prev) or pd.isna(cur):
+        return "no prior level"
+    if not metrics.is_ratio_safe(kind):
+        return charts.signed_direction(prev, cur) or "no prior level"
+    if cur == prev:
+        return "unchanged"
+    thing = "share of directional open interest" if kind.endswith("_share") else "book"
+    return f"{'bigger' if cur > prev else 'smaller'} {thing}"
+
+
+def _units_note(kind: str, unit: str) -> str:
+    """Why the change is in these units and what it does not mean."""
+    if metrics.is_ratio_safe(kind):
+        note = (
+            "Gross is a size, not a lean: this says how much more there is to unwind, "
+            "not which way the cohort points. Long and short both add to it."
+        )
+    else:
+        note = (
+            "Absolute units, never a percent: a ratio on a sign-changing quantity "
+            "inverts its own sense somewhere in its range."
+        )
+    if unit == _PP:
+        note += (
+            " Percentage points -- the difference of two shares, not a percent change "
+            "in one -- so it also moves when directional open interest moves and the "
+            "cohort trades nothing. The contract change is the one that says it traded."
+        )
+    return note
 
 
 def _flow_metric(col, f: pd.DataFrame, name: str, kind: str, unit: str, weeks: int) -> None:
@@ -138,25 +177,61 @@ def _flow_metric(col, f: pd.DataFrame, name: str, kind: str, unit: str, weeks: i
     label = f"{weeks}-week change"
     if pd.isna(delta):
         spanned = metrics.weeks_between(f["date"], weeks).iloc[-1]
+        if pd.isna(spanned):
+            why = (
+                f"This code has only {len(f):,} report{'s' if len(f) != 1 else ''} in this "
+                f"family, so there is no level {weeks} week{'s' if weeks != 1 else ''} back "
+                "to difference against."
+            )
+        else:
+            why = (
+                f"The last {weeks + 1} reports span {spanned:,.0f} weeks, not {weeks}, "
+                "so this change does not exist."
+            )
         col.metric(
             label,
             "no span",
             help=(
-                f"The last {weeks + 1} reports span {spanned:,.0f} weeks, not {weeks}, so "
-                "this change does not exist. Showing it anyway would mislabel the horizon "
-                "-- the error that survives review because the number looks fine."
+                f"{why} Showing it anyway would mislabel the horizon -- the error that "
+                "survives review because the number looks fine."
             ),
         )
         return
-    prev = f[name].iloc[-1 - weeks]
+    prev, cur = f[name].iloc[-1 - weeks], f[name].iloc[-1]
+    # charts.fmt_change formats every SIGNED kind at contract-count resolution
+    # (:+,.0f) because it assumes signed means contracts. A share does not: on
+    # 13874A asset managers a real +0.16pp week printed as "+0 %". Format the two
+    # share kinds at the unsigned resolution, in percentage points -- the same
+    # call panels/crowding.py makes -- while the direction word below still comes
+    # from the true kind.
+    fmt_kind = "share" if kind in ("net_share", "gross_share") else kind
     col.metric(
         label,
-        charts.fmt_change(float(delta), kind, unit),
-        help=(
-            f"{charts.signed_direction(prev, f[name].iloc[-1]) or 'no prior level'}. "
-            "Absolute units, never a percent: a ratio on a sign-changing quantity "
-            "inverts its own sense somewhere in its range."
-        ),
+        charts.fmt_change(float(delta), fmt_kind, unit),
+        help=f"{_direction(prev, cur, kind)}. {_units_note(kind, unit)}",
+    )
+
+
+def _coverage(rows: pd.DataFrame, ids: list[str], field: str, positions: pd.Series) -> str:
+    """Trader-count coverage for ONE side, and the position sitting behind a blank.
+
+    Counted per side because the long and short trader columns are separate
+    publications and go null separately: on 045601 FED FUNDS other reportables
+    report 21 long traders and NO short count while holding 3,903 short
+    contracts, so a long-only count reports full coverage over a real hole. That
+    is 40 of 376 tff cohort-rows on the latest report, across 34 of 94 markets.
+    """
+    side = field.removeprefix("traders_")
+    if not ids:
+        return f"{side} counts: none published in this family"
+    miss = rows.loc[ids, field].isna() & (positions.loc[ids].fillna(0) != 0)
+    blank = int(miss.sum())
+    if not blank:
+        return f"{side} counts {len(ids)} of {len(ids)}"
+    held = float(positions.loc[ids][miss].sum())
+    return (
+        f"{side} counts {len(ids) - blank} of {len(ids)}, {blank} blank while holding "
+        f"{held:,.0f} {side} contracts"
     )
 
 
@@ -202,20 +277,35 @@ def _cohort_table(source_id: str, code: str, spec: cftc_spec.ReportSpec) -> None
         hide_index=True,
     )
 
-    pub = [c.id for c in present if c.traders_long is not None]
-    blank = int((rows.loc[pub, "traders_long"].isna() & (lo.loc[pub] != 0)).sum())
+    sides = [
+        _coverage(rows, [c.id for c in present if getattr(c, field) is not None], field, pos)
+        for field, pos in (("traders_long", lo), ("traders_short", sh))
+    ]
     st.caption(
-        f"Per-trader coverage: {len(pub) - blank} of {len(pub)} cohorts that publish a "
-        f"trader count have one this week, {blank} blank while holding a nonzero position "
-        "-- a real number over an unknown, not a 0/0. Non-reportables publish no trader "
-        "count in any family, so their blank is structural, as is a blank spread (legacy "
-        "commercials, disagg producer/merchants, non-reportables)."
+        "Per-trader coverage, counted per SIDE because the two trader columns are "
+        f"published independently and go null independently: {'; '.join(sides)}. A blank "
+        "is a real position over an unknown count, not a 0/0. Non-reportables publish no "
+        "trader count in any family, so their blank is structural, as is a blank spread "
+        "(legacy commercials, disagg producer/merchants, non-reportables)."
     )
+
+    # Measured on THIS code over its whole history rather than quoted from the
+    # corpus: sum every cohort's net, week by week. A per-family constant would
+    # both drift and be wrong here -- the nonzero rate is 0% on 045601 FED FUNDS
+    # and 54% on 20974+, and neither is the corpus figure.
+    wk_net = (_f(m["long"]) - _f(m["short"])).groupby(m["report_date"], observed=True).sum()
+    nonzero = float((wk_net != 0).mean() * 100.0)
+    worst = float(wk_net.abs().max())
     st.caption(
         f"Cohort nets sum to {float(net.sum()):+,.0f} contracts on {dir_oi:,.0f} "
         "directional. Two sides to every contract, so this is zero up to the publisher's "
-        f"independent rounding of each column: within {cftc_spec.NET_ZERO_TOL:.0f} on the "
-        "futures-only reports, wider on 52.6% of supplemental rows. Rounding, not a break."
+        f"independent rounding of each column. Over all {len(wk_net):,} "
+        f"week{'s' if len(wk_net) != 1 else ''} of this code the sum is nonzero on "
+        f"{nonzero:.0f}% of them and never exceeds "
+        f"{worst:,.0f} contracts, against a tolerance of {cftc_spec.NET_ZERO_TOL:.0f} -- "
+        "which is set one contract wider than the corpus maximum, so staying inside it "
+        "describes the tolerance's calibration and is not a test that passed. Rounding, "
+        "not a break."
     )
     resid = oi - float(lo.sum()) - float(spread.fillna(0).sum())
     if resid != 0:
@@ -259,8 +349,6 @@ def _market_label(r) -> str:
 
 
 def _render() -> None:
-    caveat_block, freshness = _app_helpers()
-
     top = st.columns([3, 2])
     spec = top[0].selectbox(
         "Report family",
@@ -382,7 +470,7 @@ def _render() -> None:
         ),
         charts.Panel(
             series=[
-                charts.Series(trail, "trailing 3 years", kind="share"),
+                charts.Series(trail, f"trailing {_TRAIL_DAYS:,} days", kind="share"),
                 charts.Series(expand, "expanding, within segment", kind="share", dash="dot"),
             ],
             unit="percentile",
@@ -417,14 +505,25 @@ def _render() -> None:
     for p in panels:  # every panel, not just the top one: a break invalidates all of them
         p.breaks = breaks
     st.plotly_chart(charts.stacked(panels, height_per_panel=185))
+    cur_seg = int((f["segment"] == f["segment"].iloc[-1]).sum())
     st.caption(
         "Dotted verticals are segment boundaries -- a contract re-specification or a hole "
         f"longer than {segments.MAX_GAP_DAYS} days. Levels compare only WITHIN a segment "
         f"and both percentiles restart at each line (expanding blank for {_MIN_EXPANDING} "
-        "reports, trailing until a 3-year window is 60% occupied). In contracts a re-basing "
-        "destroys the rank and only segmentation saves it; as a share of directional OI the "
-        "rank is scale-free and survives a re-basing -- but nothing survives a change in "
-        "what the cohort means, which is why families are not spliced."
+        f"reports, trailing until {_TRAIL_REPORTS} of them sit inside a {_TRAIL_DAYS:,}-day "
+        "window). "
+        + (
+            f"Here that leaves {cur_seg:,} of this code's {len(f):,} reports available to "
+            "the ranks on screen. "
+            if cur_seg < len(f)
+            else ""
+        )
+        + "In contracts a re-basing destroys the rank and only segmentation saves it. A "
+        "share of directional open interest is invariant to the multiplier, and this board "
+        "segments it anyway rather than claim more: a re-specification changes what one "
+        "contract IS, so who holds it and in what size are not the same population either "
+        "side of the line. Nothing survives a change in what the cohort means, which is why "
+        "families are not spliced."
     )
 
     last = f.iloc[-1]
@@ -442,23 +541,29 @@ def _render() -> None:
             "carry no direction and leave the denominator too.",
         ),
         (
-            "Trailing 3y percentile",
+            f"Trailing {_TRAIL_DAYS:,}d percentile",
             _fmt_level(trail.iloc[-1], False),
-            "Rank within the last 1,095 days of this segment. Blank where that window is "
-            "under 60% occupied: a coverage statement, not a zero.",
+            f"Rank within the last {_TRAIL_DAYS:,} days of this segment, and blank until "
+            f"that window holds {_TRAIL_REPORTS} reports -- {_TRAIL_FRAC:.0%} of the "
+            f"{_TRAIL_NOMINAL} a weekly cadence would put in it. This segment holds "
+            f"{seg_n:,} report{'s' if seg_n != 1 else ''}, and a fresh one stays blank for "
+            f"its first {_TRAIL_REPORTS}: a coverage statement, not a zero, and the reason "
+            f"the label says {_TRAIL_DAYS:,} days rather than three years.",
         ),
         (
             "Expanding percentile",
             _fmt_level(expand.iloc[-1], False),
-            f"Rank against all {seg_n} reports of this segment, out of {len(f):,} for the "
-            "code. Over decades this window fills with regimes that no longer exist, so "
-            "read it against the trailing one; disagreement is the information.",
+            f"Rank against all {seg_n:,} report{'s' if seg_n != 1 else ''} of this segment, "
+            f"out of {len(f):,} for the code. Over decades this window fills with regimes "
+            "that no longer exist, so read it against the trailing one; disagreement is the "
+            "information.",
         ),
     )
     for col, (lbl, val, tip) in zip(cols, readings):
         col.metric(lbl, val, help=tip)
-    _flow_metric(cols[3], f, "display", kind, unit_label, 1)
-    _flow_metric(cols[4], f, "display", kind, unit_label, 4)
+    flow_unit = _CONTRACTS if contracts else _PP
+    _flow_metric(cols[3], f, "display", kind, flow_unit, 1)
+    _flow_metric(cols[4], f, "display", kind, flow_unit, 4)
 
     st.subheader("Every cohort, latest report")
     _cohort_table(spec.id, code, spec)
@@ -466,7 +571,14 @@ def _render() -> None:
     st.subheader("Segments of this code's history")
     _segments_table(f)
 
-    freshness(f["date"], f"{spec.label} report")
+    # freshness() gets the SOURCE's newest report date, market_last_print() the
+    # selected code's. Passing f["date"] to freshness reported a market that
+    # simply did not print this week as a stale feed -- red st.warning, "84 days
+    # ago" -- on 52 of 146 tff codes, the exact churn lib/universe.py trails a
+    # 26-report window to absorb. summary["last_report"].max() is the source
+    # maximum: verified equal to max(report_date) in all seven files.
+    freshness(summary["last_report"], f"{spec.label} report")
+    market_last_print(f["date"], summary["last_report"], f"{row['market']} ({code})")
     caveat_block(spec.id)
 
 

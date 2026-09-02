@@ -228,28 +228,63 @@ def ranked_bars(
     return fig
 
 
+#: Kinds measured in whole contracts. Everything else here is a rate or a ratio
+#: and needs decimals to be readable at all.
+_COUNT_KINDS = frozenset(
+    {"net", "gross", "flow", "change", "long", "short", "spread", "open_interest", "traders"}
+)
+
+
 def fmt_change(delta: float, kind: str, unit: str) -> str:
     """Format a change, refusing a percent for a sign-changing quantity.
 
     This is the formatting-time half of rule 3. `metrics.is_ratio_safe` raises on
     an unknown kind, so a new quantity cannot slip through by being unclassified.
+
+    Resolution follows the QUANTITY, not the sign. Two earlier bugs, opposite
+    directions, both from tying decimals to signedness:
+
+      - a gross book change printed '-11,659.00 contracts' -- two decimals on an
+        integer count
+      - a net share change of +0.1555 percentage points printed '+0', because the
+        signed branch used zero decimals. 21% of one market's weekly share moves
+        are under 0.5pp, so they all rendered as a literal zero.
+
+    A NaN is stated rather than printed as 'nan': a missing comparison is a fact
+    about the data, and '+nan contracts' next to a real number reads as a bug.
     """
-    if metrics.is_ratio_safe(kind):
-        return f"{delta:+,.2f} {unit}"
-    # Signed: absolute units only, and say which way it moved in words, since
-    # "+3,913" on a short position means "less short", not "more".
-    return f"{delta:+,.0f} {unit}"
+    safe = metrics.is_ratio_safe(kind)  # raises on an unknown kind -- fail closed
+    if delta is None or pd.isna(delta):
+        return "no comparable period"
+    body = f"{delta:+,.0f}" if kind in _COUNT_KINDS else f"{delta:+,.2f}"
+    if safe:
+        return f"{body} {unit}"
+    # Signed: absolute units only. "+3,913" on a short position means "less
+    # short", not "more" -- pair this with signed_direction() for the word.
+    return f"{body} {unit}"
 
 
 def signed_direction(previous: float, current: float) -> str:
-    """Plain-language description of a move in a sign-changing quantity."""
+    """Plain-language description of a move in a sign-changing quantity.
+
+    Exists because the number alone is ambiguous: "+3,913" on a short position
+    means the cohort got LESS short, not more anything. Returns "" when either
+    end is missing, so a caller can omit the parenthetical rather than print an
+    assertion about a comparison it could not make.
+    """
     if pd.isna(previous) or pd.isna(current):
         return ""
     if current == previous:
         return "unchanged"
-    grew = abs(current) > abs(previous)
+    # Landing exactly on zero has no side, so a comparative is unreadable --
+    # "less flat" was the old output and it grades a closed position by
+    # magnitude against a side that no longer exists.
+    if current == 0:
+        return "closed to flat"
     crossed = (previous < 0 < current) or (current < 0 < previous)
-    side = "long" if current > 0 else "short" if current < 0 else "flat"
+    side = "long" if current > 0 else "short"
     if crossed:
         return f"flipped to net {side}"
-    return f"{'more' if grew else 'less'} {side}"
+    if previous == 0:
+        return f"opened net {side}"
+    return f"{'more' if abs(current) > abs(previous) else 'less'} {side}"

@@ -15,8 +15,15 @@ Consolidated equity index series from the big contract to the E-mini:
 That is not a positioning change, it is a unit change. This repo previously
 defaulted to that exact market and ran an expanding percentile straight across
 the seam, so its headline "40th percentile" reading was ranking $20-per-point
-observations against $100-per-point ones. Substantive unit changes affect 111 of
-951 legacy codes, 69 of 652 disagg and 13 of 146 tff.
+observations against $100-per-point ones.
+
+Counted by THIS MODULE'S OWN RULE over the committed data -- which is the number
+that matters, since an earlier docstring quoted a different rule's count and drifted:
+
+    cftc_legacy_fut      96 of 951 codes      cftc_legacy_futopt   91 of 940
+    cftc_disagg_fut      56 of 652            cftc_disagg_futopt   56 of 682
+    cftc_tff_fut         13 of 146            cftc_tff_futopt      13 of 146
+    cftc_supp_cit         0 of  13
 
 CODE REUSE. The same code is retired and later re-issued for a different
 contract:
