@@ -8,7 +8,7 @@ cross-checks that the level side does not, and both are run on screen:
      This catches a dropped cohort, a field mapped to the wrong column and a
      misaligned join, all of which produce individually plausible series.
      NET_ZERO_TOL is the tolerance on a LEVEL; a flow differences two
-     independently rounded levels, so it carries about twice that.
+     independently rounded levels, so cftc_spec.FLOW_TOL is twice it.
   2. OUR DIFF MUST EQUAL CFTC'S OWN PUBLISHED change_* COLUMNS to within
      CHANGE_FIELD_TOL, except where it provably should not.
 
@@ -21,44 +21,42 @@ positioning is contemporaneous with price rather than ahead of it.
 
 WHAT THIS ADDS OVER metrics.flow, which guards the CALENDAR span so a skipped
 report week is a gap rather than a mislabelled multi-week change. It cannot guard
-a contract re-basing: a 4-week flow spanning 2023-05-02 in 20974+ would read
-~+200,000 contracts of "buying" that is entirely a 5x unit change. So flows here
-are additionally nulled wherever the window crosses a lib.segments boundary, and
-the boundaries are drawn.
+a contract re-basing: 20974+ went from $100 to $20 per index point on 2023-05-02,
+and an unmasked 4-week flow across that seam draws an open-interest change of
++209,517 contracts and an asset-manager net flow of +36,718, none of it a trade.
+Only the OI panels can show a ~200,000 artifact -- that is the OI LEVEL jump,
+49,531 -> 255,954. Cohort net flows sum to ~0 by construction, so a re-basing
+cannot manufacture +200,000 of net "buying" anywhere: measured across this seam
+the five cohort flows are +36,718 / +10,867 / -7,969 / -14,147 / -25,468. So flows
+here are additionally nulled wherever the window crosses a lib.segments boundary,
+and the boundaries are drawn.
 """
 from __future__ import annotations
-
-import sys
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
 from lib import cache, cftc_spec, charts, metrics, segments, universe
+from lib.ui import caveat_block, freshness, market_last_print
 from panels import Board
 
 _HORIZONS = (1, 2, 4, 13)
 _HISTORY_DAYS = 730
-#: A flow is a difference of two independently rounded levels.
-_FLOW_TOL = 2.0 * cftc_spec.NET_ZERO_TOL
 _UNIT = "contracts"
+#: Market-wide series drawn beside positioning. `directional_oi` is the one that is
+#: comparable with a cohort net, because a spread position is in neither the long
+#: nor the short column; total open interest is kept next to it as the reference.
+_OI_COLS = ("directional_oi", "open_interest")
 
 
-def _app_helpers():
-    """app.py's shared renderers, obtained without re-executing app.py.
-
-    Streamlit execs the entry script as `__main__` and does not also alias it as
-    `app`, so the documented `from app import caveat_block` imports a SECOND copy
-    and re-runs app.py's module body -- including its sidebar radio, which dies
-    with StreamlitDuplicateElementId before either helper is bound. Verified: with
-    the plain import this board raises on first render.
-    """
-    main = sys.modules.get("__main__")
-    if main is not None and hasattr(main, "caveat_block"):
-        return main.caveat_block, main.freshness
-    from app import caveat_block, freshness  # noqa: PLC0415
-
-    return caveat_block, freshness
+def _oi_pair(directional: pd.Series, total: pd.Series, kind: str) -> list[charts.Series]:
+    """The two open-interest lines, always drawn together. Same quantity, same
+    unit, one panel -- no axis trick and no choice for the author to make."""
+    return [
+        charts.Series(directional, "Directional (ex-spread)", kind=kind, color=charts.WARN),
+        charts.Series(total, "Total (includes spreads)", kind=kind, color=charts.MUTED),
+    ]
 
 
 def _f(s: pd.Series) -> pd.Series:
@@ -81,22 +79,34 @@ def _market_frame(source_id: str, code: str) -> tuple[pd.DataFrame, pd.DataFrame
 
     open_interest and contract_units are constant across the cohorts of one
     market-week, so they are taken with .first(); summing them would multiply open
-    interest by the cohort count.
+    interest by the cohort count. `spread` is the opposite: it is published PER
+    COHORT and not for every cohort (never for non-reportables, in any family), so
+    the market's spread total is a SUM, with min_count=1 so a market-week that
+    publishes no spread at all stays NaN rather than becoming a confident zero.
+    Verified: OI - sum(long) - spread_total is within 2 contracts of 0 in every
+    family, so this sum really is the whole spread book and directional_oi below
+    really is sum(long) == sum(short).
     """
     sub = _one_market(source_id, code)
     sub["net"] = _f(sub["long"]) - _f(sub["short"])
+    sub["spread"] = _f(sub["spread"])
     keys = ["report_date", "cohort"]
     net = sub.groupby(keys, observed=True)["net"].first().unstack("cohort").sort_index()
-    meta = sub.groupby("report_date", observed=True)[
-        ["open_interest", "contract_units"]
-    ].first().sort_index()
+    by_date = sub.groupby("report_date", observed=True)
+    meta = by_date[["open_interest", "contract_units"]].first().sort_index()
     meta["open_interest"] = _f(meta["open_interest"])
+    meta["spread_total"] = by_date["spread"].sum(min_count=1).sort_index()
+    # metrics.directional_oi fills a missing spread with 0, which would draw "this
+    # market has no spreads" where the truth is "no spread column". Blank instead.
+    meta["directional_oi"] = metrics.directional_oi(
+        meta["open_interest"], meta["spread_total"]
+    ).where(meta["spread_total"].notna())
     return net, meta
 
 
 def _flows(
     net: pd.DataFrame, meta: pd.DataFrame, horizon: int
-) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
     """h-week flows per cohort and for open interest, plus segment ids.
 
     Two independent masks because they catch different lies: metrics.flow nulls a
@@ -110,23 +120,32 @@ def _flows(
         {c: metrics.flow(net[c], dates, horizon_weeks=horizon).where(same) for c in net.columns},
         index=net.index,
     )
-    oi_flow = metrics.flow(meta["open_interest"], dates, horizon_weeks=horizon).where(same)
-    return flows, oi_flow, seg
+    oi_flows = pd.DataFrame(
+        {c: metrics.flow(meta[c], dates, horizon_weeks=horizon).where(same) for c in _OI_COLS},
+        index=net.index,
+    )
+    return flows, oi_flows, seg
 
 
-def _reconcile(source_id: str, code: str) -> tuple[pd.DataFrame, int, int]:
+def _reconcile(source_id: str, code: str) -> tuple[pd.DataFrame, dict[str, int]]:
     """Our prior-report diff against CFTC's published change_* columns.
 
-    Deliberately `.diff(1)` -- the PRIOR REPORT -- not a calendar-anchored 1-week
-    flow, because that is what the published column means. Where the prior report
-    is two weeks back the published "change" is a two-week change; that is a
-    labelling difference, not a disagreement, and it is counted separately.
+    Deliberately `.diff(1)` -- the PRIOR REPORT IN THIS DATASET -- not a
+    calendar-anchored 1-week flow. The published column is CFTC's own change
+    against CFTC's own previous report, which is not always the same row: where a
+    report CFTC published is missing here, or where a row is a sub-week re-issue,
+    the two diffs span different intervals. That is measured rather than assumed,
+    which is what the returned counts are for.
     """
     sub = _one_market(source_id, code)
 
     def rec(field, who, dates, level, published) -> pd.DataFrame:
         err = (_f(level).diff(1) - _f(published)).abs()
-        return pd.DataFrame({"field": field, "who": who, "date": dates, "err": err.to_numpy()})
+        gap = pd.Series(pd.to_datetime(dates)).diff().dt.days
+        return pd.DataFrame(
+            {"field": field, "who": who, "date": dates, "gap": gap.to_numpy(),
+             "err": err.to_numpy()}
+        )
 
     recs: list[pd.DataFrame] = []
     for cohort, g in sub.groupby("cohort", observed=True):
@@ -148,17 +167,46 @@ def _reconcile(source_id: str, code: str) -> tuple[pd.DataFrame, int, int]:
     rows = []
     for field, g in pd.concat(recs, ignore_index=True).dropna(subset=["err"]).groupby("field"):
         worst = g.loc[g["err"].idxmax()]
+        weekly = g["gap"].sub(7.0).abs() <= metrics.SPAN_TOLERANCE_DAYS
         rows.append(
             {
                 "field": field,
                 "comparisons": len(g),
                 f"agree within {tol:g}": f"{100.0 * (g['err'] <= tol).mean():.3f}%",
+                "...on a 7-day prior": (
+                    f"{100.0 * (g.loc[weekly, 'err'] <= tol).mean():.3f}% "
+                    f"of {int(weekly.sum()):,}"
+                    if weekly.any() else "no weekly prior"
+                ),
                 "worst gap": f"{g['err'].max():,.0f}",
                 "worst on": f"{pd.Timestamp(worst['date']).date()}  {worst['who']}",
+                "prior report was": f"{int(worst['gap'])} days earlier",
             }
         )
-    weeks = segments.weeks_elapsed(pd.Series(one.index, index=one.index))
-    return pd.DataFrame(rows), int((weeks > 1).sum()), int(len(one))
+
+    # Which of the known mechanisms each report belongs to, counted from the
+    # market-wide open-interest column so the counts are per REPORT, not per
+    # cohort-field. implied_prev is the level CFTC's published change was measured
+    # against; where it is not the previous level we hold, the two diffs are not
+    # spanning the same interval and the error is arithmetic, not disagreement.
+    oi, pub = _f(one["open_interest"]), _f(one["oi_change_published"])
+    gap = pd.Series(one.index, index=one.index).diff().dt.days
+    implied_prev = oi - pub
+    other_base = (implied_prev - oi.shift(1)).abs() > tol
+    # A sub-week re-issue repeats the PREVIOUS row's base: two rows days apart both
+    # published against the same earlier report.
+    reissue = other_base & (gap < 7.0 - metrics.SPAN_TOLERANCE_DAYS) & (
+        (implied_prev - implied_prev.shift(1)).abs() <= tol
+    )
+    long_gap = gap > 7.0 + metrics.SPAN_TOLERANCE_DAYS
+    counts = {
+        "reports": int(len(one)),
+        "missing_prior": int((other_base & ~reissue).sum()),
+        "reissue": int(reissue.sum()),
+        "long_gap": int(long_gap.sum()),
+        "long_gap_same_base": int((long_gap & ~other_base).sum()),
+    }
+    return pd.DataFrame(rows), counts
 
 
 def _zero_sum(flows: pd.DataFrame, net: pd.DataFrame, anchor: pd.Timestamp, labels: dict) -> None:
@@ -189,10 +237,18 @@ def _zero_sum(flows: pd.DataFrame, net: pd.DataFrame, anchor: pd.Timestamp, labe
             )
         )
 
+    tol = cftc_spec.FLOW_TOL
     total = float(usable.sum())
+    # Never "0 of 3 cohort net flows sum to +0 contracts": an empty sum is not a
+    # passing test, and formatting it as one is the same lie as a zero-length bar.
+    # Summed here rather than through metrics.net_flow_balances because that one's
+    # row-wise sum skips NaN, so it would report a clean 0 for a row where no
+    # cohort flow is computable -- which is exactly the case this branch exists for.
     side.markdown(
-        f"**{len(usable)} of {len(row)} cohort net flows sum to "
-        f"{charts.fmt_change(total, 'flow', _UNIT)}**"
+        f"**No cohort net flow is computable, so none of the {len(row)} are summed**"
+        if usable.empty
+        else f"**{len(usable)} of {len(row)} cohort net flows sum to "
+             f"{charts.fmt_change(total, 'flow', _UNIT)}**"
     )
     if missing:
         side.warning(
@@ -202,15 +258,15 @@ def _zero_sum(flows: pd.DataFrame, net: pd.DataFrame, anchor: pd.Timestamp, labe
             "chart rather than drawn at zero. Either this window's calendar span is not "
             "the stated number of weeks, or it crosses a contract re-basing."
         )
-    elif abs(total) <= _FLOW_TOL:
+    elif abs(total) <= tol:
         side.caption(
-            f"Invariant holds -- to within about {_FLOW_TOL:g} contracts, not exactly: "
+            f"Invariant holds -- to within about {tol:g} contracts, not exactly: "
             f"NET_ZERO_TOL is {cftc_spec.NET_ZERO_TOL:g} on a level and a flow differences "
             "two independently rounded levels, so it carries twice the rounding."
         )
     else:
         side.error(
-            f"{total:,.0f} is outside the {_FLOW_TOL:g}-contract rounding allowance, which "
+            f"{total:,.0f} is outside the {tol:g}-contract rounding allowance, which "
             "is not a market fact: a cohort is missing from this pivot, a field is mapped "
             "to the wrong column, or a cohort failed to report on one of the two dates."
         )
@@ -226,8 +282,6 @@ def _zero_sum(flows: pd.DataFrame, net: pd.DataFrame, anchor: pd.Timestamp, labe
 
 
 def _render() -> None:
-    caveat_block, freshness = _app_helpers()
-
     ids = [s.id for s in cftc_spec.SPECS]
     c1, c2, c3, c4 = st.columns([2.2, 3, 1, 1.4])
     # Every widget is keyed: Streamlit derives an unkeyed widget's id from its type
@@ -257,9 +311,16 @@ def _render() -> None:
     )
     horizon = c3.selectbox("Horizon (weeks)", _HORIZONS, index=0, key="flows_horizon")
 
+    # freshness() gets the SOURCE's newest report, never this market's: a market
+    # that simply did not print this week is not a stale feed. The per-market
+    # statement is market_last_print's job.
+    source_dates = summary["last_report"]
     net, meta = _market_frame(source_id, code)
     if net.empty or len(net) <= horizon:
         st.info("Too few reports on this code to compute a flow at this horizon.")
+        freshness(source_dates, "CFTC report")
+        market_last_print(net.index, source_dates, names.get(code, code))
+        caveat_block(source_id)
         return
     anchor = pd.Timestamp(
         c4.selectbox(
@@ -271,7 +332,8 @@ def _render() -> None:
         )
     )
 
-    freshness(net.index, "CFTC report")
+    freshness(source_dates, "CFTC report")
+    market_last_print(net.index, source_dates, names.get(code, code))
     row = pool[pool["market_code"] == code]
     if not row.empty:
         st.caption(
@@ -284,7 +346,7 @@ def _render() -> None:
     if code in universe.CONSOLIDATED or code in universe.SUPERSEDED_BY:
         st.caption(universe.CONSOLIDATED_TRADEOFF)
 
-    flows, oi_flow, seg = _flows(net, meta, horizon)
+    flows, oi_flows, seg = _flows(net, meta, horizon)
     starts = pd.Series(net.index, index=net.index).groupby(seg.to_numpy()).min()
     lo = anchor - pd.Timedelta(days=_HISTORY_DAYS)
     win = slice(lo, anchor)
@@ -309,50 +371,80 @@ def _render() -> None:
             "either not weekly or is cut by a re-basing."
         )
     else:
-        oi_chg = charts.Series(
-            oi_flow.loc[win], "Open interest change", kind="flow", color=charts.WARN
-        )
-        oi_lvl = charts.Series(
-            meta["open_interest"].loc[win], "Open interest",
-            kind="open_interest", color=charts.MUTED,
-        )
+        dir_chg = oi_flows["directional_oi"].loc[win]
+        tot_chg = oi_flows["open_interest"].loc[win]
         shared = dict(unit=_UNIT, breaks=breaks)
         st.plotly_chart(
             charts.stacked([
                 charts.Panel(
                     cohort_series, title=f"Cohort net flow, {horizon}-week", height=1.35, **shared
                 ),
-                charts.Panel([oi_chg], title=f"Open interest change, {horizon}-week", **shared),
-                charts.Panel([oi_lvl], title="Open interest, level", height=0.8, **shared),
+                charts.Panel(
+                    _oi_pair(dir_chg, tot_chg, "flow"),
+                    title=f"Open interest change, {horizon}-week", **shared,
+                ),
+                charts.Panel(
+                    _oi_pair(meta["directional_oi"].loc[win], meta["open_interest"].loc[win],
+                             "open_interest"),
+                    title="Open interest, level", height=0.8, **shared,
+                ),
             ])
+        )
+        # Measured off the two series just plotted rather than quoted, so this
+        # sentence cannot drift away from the chart it describes.
+        both = dir_chg.notna() & tot_chg.notna()
+        opposed = ((dir_chg > 0) & (tot_chg < 0)) | ((dir_chg < 0) & (tot_chg > 0))
+        sp = metrics.spread_share(meta["spread_total"], meta["open_interest"]).loc[win].dropna()
+        sp_txt = (
+            f"spreads are {sp.iloc[-1]:.1f}% of open interest here on {sp.index[-1].date()}"
+            if not sp.empty
+            else "this market publishes no spread column, so the two lines coincide"
         )
         st.caption(
             "Read the top two panels together -- that is the whole reason open interest "
             "stays on screen. A cohort adding while open interest RISES is new contracts "
             "created against someone else's new short; the same cohort adding while open "
             "interest is FLAT is contracts changing hands, and the other side is another "
-            "line on this chart. Blanks are deliberate: a flow is absent wherever the "
-            f"window does not span exactly {horizon} week{'s' if horizon > 1 else ''} or "
-            "crosses a dotted break (a re-basing, or a hole in this code's history)."
+            "line on this chart. Compare against the DIRECTIONAL line, not the total: a "
+            "spread position is long one expiry and short another, so it is in neither the "
+            "long nor the short column and cannot appear in any cohort net line here. The "
+            "two are not interchangeable and the difference flips the reading -- over this "
+            f"window they moved in OPPOSITE directions in {int((opposed & both).sum()):,} of "
+            f"{int(both.sum()):,} computable weeks, and {sp_txt}. Across markets the spread "
+            "share is a median 3.2% of open interest but 44.5% in 3-month SOFR and 47.2% in "
+            "Fed Funds, where nearly half of the market is calendar structure rather than "
+            f"direction. Blanks are deliberate: a flow is absent wherever the window does "
+            f"not span exactly {horizon} week{'s' if horizon > 1 else ''} or crosses a dotted "
+            "break (a re-basing, or a hole in this code's history)."
         )
 
     st.subheader("Reconciliation against the published change columns")
-    table, multi_week, n_reports = _reconcile(source_id, code)
+    table, n = _reconcile(source_id, code)
     st.dataframe(table, hide_index=True)
     st.caption(
-        f"Our own `.diff(1)` against CFTC's published change_* columns for this code over "
-        f"all {n_reports:,} of its reports. A mismatch is not automatically our bug, and "
-        "the three legitimate reasons are named rather than hand-waved. (1) The published "
-        f"change compares against the PRIOR REPORT, more than a week earlier on "
-        f"{multi_week:,} of this code's reports -- there the published figure is a "
-        "multi-week change while our labelled 1-week flow is deliberately blank. (2) Each "
-        f"column is rounded independently, hence a tolerance of {cftc_spec.CHANGE_FIELD_TOL:g} "
-        "rather than 0. (3) The July 2008 trader reclassification, where the published "
-        "change applies the NEW classification against an OLD-classification prior level: "
-        "crude 067651 differs by 323,944 contracts on 2008-07-15 in legacy futures-and-"
-        "options (commercial short) and by 147,755 in legacy futures-only, natural gas "
-        "023651 by 7,705. The disaggregated report, published on the new classification "
-        "throughout, has zero mismatches on either code."
+        f"Our `.diff(1)` against CFTC's published change_* columns over all "
+        f"{n['reports']:,} of this code's reports. A mismatch is not automatically our bug. "
+        "Below are the classes that account for the mismatches observed in this corpus, "
+        "which is not the same thing as a closed list -- the worst row's prior-report gap is "
+        "in the table so you can classify it yourself instead of trusting the list. "
+        "(1) A REPORT CFTC PUBLISHED IS ABSENT FROM THIS DATASET. The published change is "
+        "measured against CFTC's own previous report; where we do not hold that report, OUR "
+        "`.diff(1)` spans the hole and the published figure does not, so the difference "
+        "measures the missing week rather than a disagreement. On this code the published "
+        f"open-interest change is taken against a level this dataset does not hold on "
+        f"{n['missing_prior']:,} of those reports. (2) A SUB-WEEK RE-ISSUE: two reports days "
+        "apart both published against the same earlier base, so the second is not a change "
+        f"from the first -- {n['reissue']:,} of them. (3) Independent rounding per column, "
+        f"hence a tolerance of {cftc_spec.CHANGE_FIELD_TOL:g} rather than 0. (4) A LABELLING "
+        f"difference that is no error at all: on {n['long_gap']:,} reports the previous one "
+        f"is over a week back, and on {n['long_gap_same_base']:,} of those the published "
+        "change is measured against exactly that report -- it agrees with our diff while "
+        "covering several weeks, and our own labelled 1-week flow is deliberately blank "
+        "there. (5) The July 2008 trader reclassification, where the published change "
+        "applies the NEW classification against an OLD-classification prior level: legacy "
+        "futures-and-options crude 067651 differs by 323,944 contracts on 2008-07-15 "
+        "(commercial short), legacy futures-only by 147,755, and the disaggregated report "
+        "-- on the new classification throughout -- by 0."
     )
 
     caveat_block(source_id)

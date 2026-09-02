@@ -495,7 +495,10 @@ BY_ID: dict[str, ReportSpec] = {s.id: s for s in SPECS}
 
 
 # --------------------------------------------------------------------------- #
-# Tolerances, all measured over the full 1,046,469-row corpus
+# Tolerances, all measured over the full corpus: 1,046,369 market-weeks across
+# the seven reports, which melt to 4,087,353 tidy rows. The identities are
+# market-week quantities, so the market-week count is the relevant denominator --
+# quoting the row count would inflate every rate by the cohort multiplier.
 # --------------------------------------------------------------------------- #
 # CFTC rounds published cohort figures independently, so the accounting
 # identities hold to within a few contracts rather than exactly. Both of these
@@ -548,15 +551,15 @@ RESIDUAL_EXPLANATION = (
     "Integer rounding in the published figures. CFTC rounds each cohort column "
     "independently, so the columns reconcile to within a few contracts rather "
     "than exactly. It is NOT an unpublished non-reportable spread, and four "
-    "measurements say so: the residual is frequently NEGATIVE -- 74% of nonzero "
-    "rows in the TFF futures-only report and about half in the combined reports "
-    "-- while a missing non-negative spread could only ever push it positive; it "
-    "never leaves the range -4..+4 even on markets carrying 25 million contracts "
-    "of open interest, where a real position bucket would scale with the market; "
-    "its correlation with open interest is under 0.03 in absolute value; and it "
-    "is exactly zero on all 184,229 rows of the disaggregated futures-only "
-    "report, the dataset where small-trader calendar spreads would be most "
-    "visible."
+    "measurements say so. It is frequently NEGATIVE -- 73% of the nonzero "
+    "market-weeks in the TFF futures-only report and about half in the combined "
+    "reports -- while a missing non-negative spread could only ever push it "
+    "positive. It never leaves the range -4..+4, on markets whose open interest "
+    "reaches 35,814,710 contracts, where a real position bucket would scale with "
+    "the market. Its correlation with open interest is under 0.031 in absolute "
+    "value in every one of the seven reports. And it is exactly zero on all "
+    "184,229 market-weeks of the disaggregated futures-only report, the dataset "
+    "where small-trader calendar spreads would be most visible."
 )
 
 

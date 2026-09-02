@@ -7,7 +7,7 @@ pipeline running and the charts plausible. So each assertion here is either an
 accounting identity on real published figures or a regression pin on a
 correction this repo has already had to make once.
 
-Three corrections are pinned deliberately, and every one of them started life as
+Four corrections are pinned deliberately, and every one of them started life as
 an exact-equality assertion or a confident caption:
 
   sum(net) == 0                    is FALSE on 458 tff and 295 supplemental
@@ -19,6 +19,12 @@ an exact-equality assertion or a confident caption:
   (name, date) identifies a market is FALSE: on 1999-06-22 codes 209741 and
                                    209742 publish the identical name while
                                    holding 22,998 and 537 contracts.
+  CR4/CR8 over open interest       is the WRONG denominator -- they are shares of
+                                   the side total, open interest minus spreads.
+                                   The slice disproves the open-interest reading
+                                   on four BITCOIN market-weeks where it puts
+                                   more contracts in the top eight longs than
+                                   exist on the long side at all.
 
 What this module does NOT test: anything about display (tests/test_display_rules)
 or about the causal-ranking maths (tests/test_metrics). It also never fetches --
@@ -47,7 +53,20 @@ PRIMARY_KEY = ("report_date", "market_code", "cohort")
 NASDAQ_BIG = "209741"  # legacy: shares one name with 209742 on 1999-06-22
 NASDAQ_EMINI = "209742"  # a SUPERSEDED_BY leg of 20974+
 GOLD = "088691"  # legacy from 1986-01-15: pre-2002 non-weekly cadence
+BITCOIN = "133741"  # tff: null traders_long, and the CR-denominator disproof
 UNIT_BREAK_DATE = "2023-05-02"  # 20974+ re-based from $100 to $20 per point
+
+# The one off-cycle report in the slice: legacy 209741 published twice inside the
+# same week in December 1997, and the second one's published change is measured
+# from the week before rather than from the row before it. See
+# test_the_published_change_is_measured_from_the_prior_report_not_from_a_span.
+REISSUE = "1997-12-23"
+REISSUE_PRIOR_ROW = "1997-12-19"  # four days earlier, and NOT what it diffs against
+REISSUE_PRIOR_WEEK = "1997-12-16"  # seven days earlier, and what it does diff against
+
+#: The published gross concentration ratios. conc_net_* are excluded: those are
+#: shares of a NET position and have their own denominator question.
+CONC_GROSS = ("conc_gross_4_long", "conc_gross_8_long", "conc_gross_4_short", "conc_gross_8_short")
 
 
 # --------------------------------------------------------------------------- #
@@ -141,12 +160,20 @@ def test_the_residual_goes_negative_which_disproves_the_hidden_spread_reading(cf
     market-weeks and 121 supplemental ones, so no such bucket exists and the
     leftover is integer rounding in the publisher.
 
-    Three supporting properties are asserted with it, because the sign alone
-    invites the reply "then it is a signed adjustment": the residual is bounded by
-    a few contracts while open interest across the slice spans 1,484x, it is
-    uncorrelated with open interest, and it is exactly zero on every
-    disaggregated row -- the family where small-trader calendar spreads would be
-    most visible.
+    Two supporting properties are asserted with it, because the sign alone invites
+    the reply "then it is a signed adjustment": the residual is bounded by a few
+    contracts while open interest across the slice spans 1,484x, and it is
+    uncorrelated with open interest.
+
+    The third supporting property -- that the residual is exactly zero on all
+    184,229 disaggregated futures-only market-weeks, the family where small-trader
+    calendar spreads would be most visible -- is a FULL-CORPUS measurement
+    recorded in cftc_spec and is not re-derivable from a 0.5 MB slice. What this
+    slice shows is narrower and is what gets asserted: the residual is exactly
+    zero on all 556 disagg market-weeks here, but also on all 2,258 legacy ones,
+    so within the fixture disagg is not distinguishable as the control. The
+    property demonstrated below is "these codes round cleanly", not "this family
+    does" -- the slice holds one disagg code (088691) and three legacy ones.
     """
     pooled = []
     for sid, df in cftc_frames.items():
@@ -154,15 +181,23 @@ def test_the_residual_goes_negative_which_disproves_the_hidden_spread_reading(cf
         resid = (mw["open_interest"] - mw["long_sum"] - mw["spread_sum"].fillna(0)).astype("float64")
         assert resid.abs().max() <= OI_RESIDUAL_TOL, f"{sid}: residual reaches {resid.abs().max()}"
         if sid == "cftc_disagg_fut":
-            assert (resid == 0).all(), "disagg is the control: its residual is exactly zero"
+            assert (resid == 0).all(), (
+                f"disagg rounds cleanly in this slice ({mw['market_code'].nunique()} code(s)); "
+                "the family-level claim is a corpus measurement in cftc_spec"
+            )
         pooled.append(pd.DataFrame({"oi": mw["open_interest"].astype("float64"), "resid": resid}))
 
     p = pd.concat(pooled, ignore_index=True)
     negative, positive = int((p["resid"] < 0).sum()), int((p["resid"] > 0).sum())
     assert negative > 0, "the correction is no longer exercised by the fixture"
-    # Roughly symmetric, which is what rounding looks like and what a missing
-    # non-negative bucket cannot look like. Loose bounds: a sign test, not a fit.
-    assert 0.3 < negative / (negative + positive) < 0.7, f"lopsided: {negative} neg / {positive} pos"
+    # Both signs occur in bulk. This is deliberately NOT a symmetry claim: over the
+    # full corpus the residual is negative in 74% of nonzero tff futures-only rows
+    # and about half in the combined reports (cftc_spec.RESIDUAL_EXPLANATION), and
+    # the mix here depends on which markets are in the slice. What kills the hidden
+    # non-negative bucket is that negatives are not a rarity -- that bucket
+    # predicts zero of them.
+    assert positive > 0, f"only one sign present: {negative} neg / {positive} pos"
+    assert negative / (negative + positive) > 0.2, f"negatives marginal: {negative} neg / {positive} pos"
     # Does not scale with the market, and is uncorrelated with it.
     assert p["oi"].max() / p["oi"].min() > 100
     assert abs(p["oi"].corr(p["resid"])) < 0.1
@@ -171,17 +206,263 @@ def test_the_residual_goes_negative_which_disproves_the_hidden_spread_reading(cf
     assert "NOT an unpublished non-reportable spread" in cftc_spec.RESIDUAL_EXPLANATION
 
 
+def _conc_by_market_week(df: pd.DataFrame) -> pd.DataFrame:
+    """The four published gross concentration ratios, one row per market-week.
+
+    `first`, for the reason test_market_week_columns_are_constant_across_cohorts
+    pins: these are market-week columns repeated on every cohort row.
+    """
+    g = df.groupby(["market_code", "report_date"], observed=True)
+    out = pd.DataFrame({c: g[c].first().astype("float64") for c in CONC_GROSS})
+    return out.reset_index()
+
+
+def test_concentration_is_a_share_of_the_side_total_not_of_open_interest(cftc_frame, market_weeks):
+    """REGRESSION. CR4/CR8 are published as shares of the SIDE TOTAL -- open
+    interest minus spread positions -- so the denominator is
+    metrics.directional_oi, never open_interest.
+
+    The crowding board renders `conc_gross_4_long / 100 * dir_oi` as a CONTRACT
+    COUNT and captions the denominator, so the wrong reading is not a rounding
+    difference: it overstates by 1/(1 - spread_share). On the BITCOIN week that
+    disproves it in the next test, spreads are 26.5% of open interest, so the
+    published 78.5% top-8 long share renders as 13,422 contracts against the side
+    total and 18,265 against open interest -- 36% more, and 1,167 more contracts
+    than exist on the long side at all.
+
+    Here, the half that must hold everywhere: the top four (or eight) on a side
+    cannot hold more than that whole side. Asserted with ZERO slack, because none
+    is needed -- over the full corpus of these four families the largest overage
+    under this denominator is exactly 0.0 contracts, reached on the market-weeks
+    that publish 100.0. (If a future slice ever trips it by a fraction of a
+    contract, the defensible tolerance is half a published step, 5e-4 of the side
+    total, plus NET_ZERO_TOL for the rounding in the levels themselves -- not a
+    switch of denominator.)
+    """
+    source_id, df = cftc_frame
+    spec = cftc_spec.spec_for(source_id)
+    wk = market_weeks(df).merge(_conc_by_market_week(df), on=["market_code", "report_date"])
+    if not spec.has_conc:
+        assert wk[list(CONC_GROSS)].isna().all().all(), f"{source_id}: has_conc is False, ratios present"
+        return
+
+    side = metrics.directional_oi(wk["open_interest"], wk["spread_sum"]).astype("float64")
+    for col, whole in (
+        ("conc_gross_4_long", "long_sum"),
+        ("conc_gross_8_long", "long_sum"),
+        ("conc_gross_4_short", "short_sum"),
+        ("conc_gross_8_short", "short_sum"),
+    ):
+        assert wk[col].notna().any(), f"{source_id}: {col} is all-null, nothing checked"
+        over = wk[col] / 100.0 * side - wk[whole].astype("float64")
+        assert not (over > 0).any(), (
+            f"{source_id}: {col} claims up to {over.max():,.0f} contracts more than the "
+            f"{whole} it is a share of -- the denominator is not the side total"
+        )
+
+
+def test_open_interest_as_the_concentration_denominator_is_disproved_by_the_slice(tff_fut, market_weeks):
+    """REGRESSION, the counterexample half, and the reason this correction is
+    pinned rather than trusted to a comment.
+
+    BITCOIN (133741) carries 23-27% of its open interest as calendar spreads, and
+    on four 2026 market-weeks in the slice `conc_gross_8_long / 100 *
+    open_interest` puts 471 to 1,167 MORE contracts in the top eight longs than
+    exist on the long side in total. That is arithmetically impossible, so the
+    denominator is not open interest. The same rows read against the side total
+    leave 2,900-4,000 contracts of headroom.
+
+    Pinned like the net-zero counterexample: if a fixture rebuild drops these
+    weeks the assertion above becomes untestable and this fails to say so.
+    """
+    wk = market_weeks(tff_fut).merge(_conc_by_market_week(tff_fut), on=["market_code", "report_date"])
+    oi = wk["open_interest"].astype("float64")
+    long_side = wk["long_sum"].astype("float64")
+    side = metrics.directional_oi(wk["open_interest"], wk["spread_sum"]).astype("float64")
+
+    impossible = wk["conc_gross_8_long"] / 100.0 * oi > long_side
+    assert impossible.any(), (
+        "fixture lost the CR-denominator counterexample (BITCOIN 133741, 2026): with it "
+        "gone, reading CR8 against open interest passes every assertion in this suite"
+    )
+    assert set(wk.loc[impossible, "market_code"].astype(str)) == {BITCOIN}
+
+    over = (wk["conc_gross_8_long"] / 100.0 * oi - long_side)[impossible]
+    assert over.min() > 0 and over.max() > 100, f"overstatement collapsed to {over.max():,.1f} contracts"
+    room = (long_side - wk["conc_gross_8_long"] / 100.0 * side)[impossible]
+    assert (room > 0).all(), f"the side-total reading breaches too, by {(-room).max():,.1f}"
+    # It is the spread share that separates the two readings, which is why a
+    # low-spread market cannot carry this counterexample.
+    share = metrics.spread_share(wk["spread_sum"].astype("float64"), oi)[impossible]
+    assert (share > 20).all(), f"spread share on the counterexample weeks is only {share.min():.1f}%"
+
+
+def _published_change_errors(df: pd.DataFrame) -> pd.DataFrame:
+    """|our own diff - the published change| against the PREVIOUS PUBLISHED report
+    of the same market and cohort, with the calendar gap that separates the pair.
+
+    A row-position diff within (market_code, cohort), which is what the published
+    column means -- see the second test below for the evidence, and for the one
+    pair in the slice where the previous row is not the report it diffs against.
+    """
+    s = df.sort_values(["market_code", "cohort", "report_date"], kind="mergesort").reset_index(drop=True)
+    s["_d"] = pd.to_datetime(s["report_date"])
+    g = s.groupby(["market_code", "cohort"], observed=True, sort=False)
+    err = pd.concat(
+        [
+            (g["long"].diff().astype("float64") - s["change_long_published"].astype("float64")).abs(),
+            (g["short"].diff().astype("float64") - s["change_short_published"].astype("float64")).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    out = pd.DataFrame(
+        {
+            "report_date": s["report_date"].astype(str),
+            "market_code": s["market_code"].astype(str),
+            "cohort": s["cohort"].astype(str),
+            "gap_days": g["_d"].diff().dt.days,
+            "err": err,
+        }
+    )
+    return out[out["err"].notna() & out["gap_days"].notna()].reset_index(drop=True)
+
+
+def test_the_published_change_columns_reconcile_against_our_own_diff(cftc_frames):
+    """Identity 3, the one cftc_spec.CHANGE_FIELD_TOL exists for and the only one
+    of the three that two boards render directly (panels/integrity metrics and a
+    per-gap disagreement table, panels/flows per-field reconciliation).
+
+    Our long.diff() against change_long_published per market and cohort, over
+    consecutive published reports. It agrees to within CHANGE_FIELD_TOL on every
+    comparable pair in the slice except three, and the exception set is asserted
+    rather than tolerated: those three are one off-cycle re-issue and they are the
+    subject of the next test. A field map that pointed change_long_published at
+    the wrong cohort would break this on thousands of pairs.
+    """
+    tol = cftc_spec.CHANGE_FIELD_TOL
+    errors = {sid: _published_change_errors(df) for sid, df in cftc_frames.items()}
+    over, total = [], 0
+    for sid, pairs in errors.items():
+        assert len(pairs) > 1_000, f"{sid}: only {len(pairs)} comparable pairs, identity 3 barely tested"
+        total += len(pairs)
+        expected = (pairs["report_date"] == REISSUE) & (pairs["market_code"] == NASDAQ_BIG)
+        clean = pairs[~expected]
+        worst = clean.loc[clean["err"].idxmax()]
+        assert worst["err"] <= tol, f"{sid}: |diff - published change| reaches {worst.to_dict()}"
+        over.append(pairs[pairs["err"] > tol].assign(source=sid))
+
+    assert total > 15_000, f"only {total} comparisons across the four families"
+    bad = pd.concat(over, ignore_index=True)
+    assert not bad.empty, "fixture lost the off-cycle re-issue (legacy 209741, 1997-12-23)"
+    assert set(bad["report_date"]) == {REISSUE} and set(bad["market_code"]) == {NASDAQ_BIG}
+    assert bad["err"].max() > 1_000, f"the re-issue disagrees by 1,847 contracts, not {bad['err'].max()}"
+
+    # Agreement here is ARITHMETIC, not economic, and the unit break proves it.
+    # Across 2023-05-02 in 20974+ the published change reconciles to 0-1 contracts
+    # -- CFTC differenced the new $20-per-point level against the old $100 level
+    # without restating either: asset managers "bought" 66,239 contracts on a week
+    # when open interest "grew" by 206,423. So identity 3 holding across a break is
+    # no evidence the number means anything; lib.segments is what disqualifies it.
+    tff = cftc_frames["cftc_tff_fut"]
+    seam = errors["cftc_tff_fut"]
+    seam = seam[(seam["report_date"] == UNIT_BREAK_DATE) & (seam["market_code"] == "20974+")]
+    assert len(seam) == len(TFF.cohorts), f"the re-based week is not fully comparable: {seam}"
+    assert seam["err"].max() <= tol, f"the re-based week no longer reconciles: {seam}"
+    nas = tff[tff["market_code"].astype(str) == "20974+"].sort_values("report_date")
+    units = nas.set_index(nas["report_date"].astype(str))["contract_units"]
+    across = {segments.unit_signature(units.loc[UNIT_BREAK_DATE].iloc[0]),
+              segments.unit_signature(units[units.index < UNIT_BREAK_DATE].iloc[-1])}
+    assert len(across) == 2, "the seam this warning is about is no longer a unit break"
+
+
+def test_the_published_change_is_measured_from_the_prior_report_not_from_a_span(legacy_fut, gold_legacy):
+    """Fact H, sharpened. NEITHER "one row back" nor "seven days back" is what the
+    published change means, and the slice contains a counterexample to each.
+
+      - 088691 runs semi-monthly before 2002, with gaps of 11 to 18 days, and
+        every one of those pairs reconciles EXACTLY -- error 0, not 2 -- against
+        the previous published report. So the published change is not a
+        seven-day change, and a comparison filtered to a 7-day span silently
+        discards these instead of reconciling them.
+      - 209741 published twice inside one week in December 1997: 1997-12-19 and
+        then 1997-12-23. The 12-23 change is measured from 1997-12-16, seven days
+        back, and NOT from the 12-19 report one row back. Against the previous row
+        all three cohorts disagree, by 1,847 / 376 / 660 contracts; against
+        1997-12-16 all three are exact on both sides, and so is
+        oi_change_published.
+
+    So the honest statement is that the published change compares against the
+    report CFTC treated as the prior period. That is the previous published
+    report almost everywhere, which is why the test above diffs row to row, and it
+    is why the remaining disagreements have to be shown rather than assumed away.
+    """
+    one = legacy_fut[legacy_fut["market_code"].astype(str) == NASDAQ_BIG]
+    dates = set(one["report_date"].astype(str))
+    assert {REISSUE, REISSUE_PRIOR_ROW, REISSUE_PRIOR_WEEK} <= dates, "fixture lost the 1997 re-issue"
+
+    for cohort, g in one.groupby("cohort", observed=True):
+        lv = g.set_index(g["report_date"].astype(str))
+        for pos, pub in (("long", "change_long_published"), ("short", "change_short_published")):
+            published = float(lv.loc[REISSUE, pub])
+            from_week = float(lv.loc[REISSUE, pos]) - float(lv.loc[REISSUE_PRIOR_WEEK, pos])
+            from_row = float(lv.loc[REISSUE, pos]) - float(lv.loc[REISSUE_PRIOR_ROW, pos])
+            assert from_week == published, f"{cohort}/{pos}: 12-16 -> 12-23 is {from_week}, published {published}"
+            assert abs(from_row - published) > cftc_spec.CHANGE_FIELD_TOL, (
+                f"{cohort}/{pos}: the previous row now agrees, so the counterexample is gone"
+            )
+
+    oi = one.groupby(one["report_date"].astype(str))[["open_interest", "oi_change_published"]].first()
+    assert float(oi.loc[REISSUE, "open_interest"]) - float(oi.loc[REISSUE_PRIOR_WEEK, "open_interest"]) == float(
+        oi.loc[REISSUE, "oi_change_published"]
+    )
+
+    wide = _published_change_errors(gold_legacy).query("gap_days >= 11")
+    assert len(wide) > 100, f"fixture lost the semi-monthly cadence: {len(wide)} wide-gap pairs"
+    assert wide["gap_days"].max() >= 18
+    assert wide["err"].max() == 0, (
+        f"a semi-monthly gap reconciles exactly against the previous report; worst here is "
+        f"{wide['err'].max()} over {len(wide)} pairs"
+    )
+
+
 def test_market_week_columns_are_constant_across_cohorts(cftc_frame):
     """open_interest, traders_total and the concentration ratios are market-week
     level and repeated on every cohort row, so aggregating them with .sum()
     multiplies them by the cohort count -- 3x in legacy, 5x in tff -- and the
     result is a plausible number nobody questions. Pinned so .first() stays
-    justified rather than folkloric."""
+    justified rather than folkloric.
+
+    nunique(dropna=True) <= 1 is ALSO satisfied by a column that is entirely null,
+    so each column's population is asserted too. Without that the check says
+    nothing at all about the eight concentration columns in the supplemental
+    family, where the report publishes none and they land all-null: 8 of 11
+    columns would assert nothing while reading as if they had been checked.
+    """
     source_id, df = cftc_frame
-    level_cols = ["open_interest", "traders_total", "oi_change_published", *cftc_source._CONC_MAP]
+    spec = cftc_spec.spec_for(source_id)
+    level_cols = ["open_interest", "traders_total", "oi_change_published"]
+    conc_cols = list(cftc_source._CONC_MAP)
     g = df.groupby(["market_code", "report_date"], observed=True)
-    for col in level_cols:
+    for col in level_cols + conc_cols:
         assert g[col].nunique(dropna=True).max() <= 1, f"{source_id}: {col} varies within a market-week"
+    for col in level_cols:
+        assert df[col].notna().any(), f"{source_id}: {col} is entirely null, so constancy is vacuous"
+
+    if spec.has_conc:
+        empty = [c for c in conc_cols if df[c].isna().all()]
+        assert not empty, f"{source_id}: has_conc but {empty} are all-null, so constancy is vacuous"
+        # ... and they move between market-weeks, so "constant within one" is a
+        # real constraint rather than a constant column.
+        assert g["conc_gross_4_long"].first().nunique() > 1, f"{source_id}: CR4 never moves"
+        # The parse-time clamp is what makes this true of the stored data --
+        # sources/cftc.parse drops anything outside [0, 100] to NaN, which is why
+        # metrics.clamp_percentage never fires downstream. See cftc_spec.
+        worst = float(df[conc_cols].max(numeric_only=True).max())
+        assert worst <= cftc_spec.CONC_VALID_MAX, f"{source_id}: a concentration reads {worst}"
+    else:
+        assert df[conc_cols].isna().all().all(), (
+            f"{source_id}: has_conc is False but the slice carries concentration values"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -246,17 +527,30 @@ def test_legacy_history_is_not_weekly(gold_legacy):
 
 
 def test_null_trader_counts_coexist_with_nonzero_positions(tff_fut):
-    """Fact D, pinned. traders_long is null on 7.9% of asset-manager rows and
-    11.1% of dealer rows in this slice WHILE the position is nonzero, so a table
-    ranked on a per-trader measure silently omits them. The coverage fraction is
-    computed and reported in the failure message for the same reason a panel has
-    to show it: the omission is invisible in the ranking itself."""
+    """Fact D, pinned. traders_long is null WHILE the position is nonzero, so a
+    table ranked on a per-trader measure silently omits those rows.
+
+    The population is the one the code below selects -- reportable cohorts holding
+    a nonzero long -- on which the null rate is 8.1% of asset-manager rows and
+    11.9% of dealer rows in this slice. (Over ALL reportable rows, held or not, it
+    is 7.9% and 11.1%: a different population, so the figure quoted has to be the
+    one the filter produces.) Both are recomputed and reported per cohort in the
+    failure message, for the same reason a panel has to show them: the omission is
+    invisible in the ranking itself.
+    """
     reportable = tff_fut[tff_fut["cohort"] != "nonrept"]
     held = reportable[reportable["long"] > 0]
     blind = held["traders_long"].isna()
-    coverage = f"{int((~blind).sum())} of {len(held)} rows have a trader count"
+    by_cohort = 100.0 * held.groupby("cohort", observed=True)["traders_long"].apply(lambda s: s.isna().mean())
+    coverage = (
+        f"{int((~blind).sum())} of {len(held)} held rows have a trader count; "
+        f"null % by cohort {by_cohort.round(2).to_dict()}"
+    )
     assert blind.sum() > 0, f"fixture lost the null-trader case (BITCOIN 133741): {coverage}"
     assert blind.mean() < 0.5, f"implausibly sparse -- check the field map: {coverage}"
+    # Named because the docstring quotes them and because it is cohort-specific,
+    # not a uniform sparsity: leveraged funds are fully covered in this slice.
+    assert by_cohort["asset_mgr"] > 0 and by_cohort["dealer"] > 0, coverage
     assert metrics.avg_position_per_trader(
         held.loc[blind, "long"], held.loc[blind, "traders_long"]
     ).isna().all(), "a null trader count must give NaN, never a division by zero"

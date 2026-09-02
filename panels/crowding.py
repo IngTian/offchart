@@ -16,10 +16,11 @@ TOTAL -- open interest MINUS spreads -- not of open interest, and lib/cftc_spec
 .CONC_FIELDS carries the two measured disproofs of the open-interest reading: 158
 tff rows report exactly 100.0 with spread > 0, impossible against a denominator
 that caps them at 25.2% there, and CR4/100 * OI exceeds the entire long side in
-1,623 of 46,361 market-weeks while the side-total reading never does. The error is
-1/(1 - spread share): 1.8x in SOFR-3M, the default market here. So the sentence on
-screen is "the four largest longs hold X% of all long positions", with directional
-open interest beside it so X converts back into contracts.
+1,623 of 46,361 market-weeks while the side-total reading never does. Reading it
+against open interest OVERSTATES the contracts those four hold by 1/(1 - spread
+share) -- 1.8x in SOFR-3M, the default market here. So the sentence on screen is
+"the four largest longs hold X% of all long positions", with directional open
+interest beside it so X converts back into contracts.
 
 WHAT THIS BOARD REFUSES TO ANSWER. Whether crowding predicts anything: this repo
 has no price series, so no forward return exists to test against, and positioning
@@ -29,13 +30,14 @@ desks of one firm.
 """
 from __future__ import annotations
 
-import sys
+import math
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
 from lib import cache, cftc_spec, charts, metrics, segments, universe
+from lib.ui import caveat_block, freshness, market_last_print
 from panels import Board
 
 SOURCE = "cftc_tff_fut"
@@ -43,23 +45,16 @@ SOURCE = "cftc_tff_fut"
 #: All eight published concentration columns: {gross, net} x {4, 8} x {long, short}.
 CONC = tuple(f"conc_{k}_{n}_{s}" for k in ("gross", "net") for s in ("long", "short") for n in (4, 8))
 
-
-def _app_helpers():
-    """app.py's shared renderers, obtained without re-executing app.py.
-
-    Streamlit execs the entry script as `__main__` and does not alias it in sys.modules
-    under its filename, so the documented `from app import caveat_block` imports a
-    SECOND copy and runs app.py's module body again -- including its unkeyed sidebar
-    radio, which raises StreamlitDuplicateElementId before either helper is bound.
-    Verified: with the plain import this board fails on first render. So prefer the
-    already-running module and keep the documented import as the fallback.
-    """
-    main = sys.modules.get("__main__")
-    if main is not None and hasattr(main, "caveat_block"):
-        return main.caveat_block, main.freshness
-    from app import caveat_block, freshness  # noqa: PLC0415
-
-    return caveat_block, freshness
+#: The percentile's trailing window and the occupancy it must reach, passed
+#: EXPLICITLY to metrics.trailing_percentile rather than left to its defaults so the
+#: caption can state the numbers the gate used instead of restating constants that
+#: drift from it. RANK_FULL is how many weekly reports fit in (t - 1095d, t] and
+#: RANK_FLOOR the minimum before a percentile publishes: 157 and 94, the same floor
+#: metrics derives from the cadence rather than from the sample (_causal_floor).
+RANK_WINDOW_DAYS = 1095
+RANK_MIN_FRAC = 0.6
+RANK_FULL = int(RANK_WINDOW_DAYS // metrics.DAYS_PER_REPORT) + 1
+RANK_FLOOR = math.ceil(RANK_MIN_FRAC * RANK_WINDOW_DAYS / metrics.DAYS_PER_REPORT)
 
 
 def _f(s: pd.Series) -> pd.Series:
@@ -121,9 +116,12 @@ def _weekly(df: pd.DataFrame, code: str) -> pd.DataFrame:
     shortened names wholesale on 2022-02-08, so a name filter truncates history
     silently. Concentration, open interest and units are market-week columns, identical
     across a week's cohorts, so they take .first(); spread is genuinely per-cohort and
-    sums. Legacy publishes concentration above 100% on 23 rows (worst 482.6% on 957
-    contracts) and tff has none, but the clamp runs here rather than being trusted to
-    the family: a broken input should read as a gap, not as a spike.
+    sums. THE PER-COHORT TRADER COUNTS ARE NOT MARKET-WEEK COLUMNS -- they differ across
+    cohorts in 94.0% of the 46,361 tff market-weeks -- so they are deliberately absent
+    here, where .first() would be a silent choice of cohort. Legacy publishes
+    concentration above 100% on 23 rows (worst 482.6% on 957 contracts) and tff has
+    none, but the clamp runs here rather than being trusted to the family: a broken
+    input should read as a gap, not as a spike.
     """
     mk = df.loc[df["market_code"] == code].copy()
     mk["report_date"] = pd.to_datetime(mk["report_date"])
@@ -139,43 +137,62 @@ def _weekly(df: pd.DataFrame, code: str) -> pd.DataFrame:
     return wk
 
 
-def _rank_within_segments(values: pd.Series, segment: pd.Series) -> pd.Series:
-    """Trailing 3-year percentile, restarted at every unit break and long hole.
+def _rank_within_segments(values: pd.Series, segment: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """Trailing 3-year percentile, plus how many reports each point ranked against.
 
     Causal twice over: the window is (t - 3y, t], and it never reaches back across a
     re-basing. Ranking $20-per-point observations against $100-per-point ones is what
     this repo used to do, and it is not a percentile of anything.
+
+    The count comes back with the ranks because "3-year percentile" names the WINDOW,
+    not the sample: 342603's current segment fills 111 of 157 slots and still publishes,
+    since the gate is RANK_FLOOR readings rather than a full window. No short-segment
+    guard here on purpose -- the gate is metrics' cadence-derived floor, which is why
+    the 58-report crypto segments now read n/a instead of 90 and 100.
     """
     out = pd.Series(np.nan, index=values.index, dtype="float64")
+    n_obs = pd.Series(np.nan, index=values.index, dtype="float64")
     dates = pd.Series(values.index, index=values.index)
     for sid in segment.unique():
         m = segment == sid
-        if int(m.sum()) < 8:  # too short to rank; left blank rather than guessed
-            continue
-        out.loc[m] = metrics.trailing_percentile(values.loc[m], dates.loc[m])
-    return out
+        out.loc[m] = metrics.trailing_percentile(
+            values.loc[m], dates.loc[m],
+            window_days=RANK_WINDOW_DAYS, min_obs_frac=RANK_MIN_FRAC,
+        )
+        by_date = pd.Series(values.loc[m].to_numpy(), index=pd.DatetimeIndex(dates.loc[m].to_numpy()))
+        n_obs.loc[m] = by_date.rolling(f"{RANK_WINDOW_DAYS}D").count().to_numpy()
+    return out, n_obs
 
 
 def _concentration(wk: pd.DataFrame, breaks: tuple) -> None:
     st.subheader("Concentration")
     cur = wk.iloc[-1]
-    rank = _rank_within_segments(wk["conc_gross_8_long"], wk["segment"])
+    rank, n_ranked = _rank_within_segments(wk["conc_gross_8_long"], wk["segment"])
+    # The two readings of the same published percentage, side by side, because the
+    # error is a factor of 1.8 on the default market and invisible without both.
+    held_by_four = cur["conc_gross_4_long"] / 100.0 * cur["dir_oi"]
+    if_oi_denominator = cur["conc_gross_4_long"] / 100.0 * cur["open_interest"]
+    overstatement = cur["open_interest"] / cur["dir_oi"] if cur["dir_oi"] > 0 else float("nan")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Top 4 longs, share of the long side", _fmt(cur["conc_gross_4_long"]),
-              _wow(wk["conc_gross_4_long"]))
-    c2.metric("= contracts held by those four",
-              _fmt(cur["conc_gross_4_long"] / 100.0 * cur["dir_oi"], "", 0))
-    c3.metric("Top 8 longs, trailing 3y percentile", _fmt(rank.iloc[-1], "", 0))
-    c4.metric("Spreads, share of open interest", _fmt(cur["spread_pct"]), _wow(wk["spread_pct"]))
+              _wow(wk["conc_gross_4_long"]), delta_color="off")
+    c2.metric("= contracts held by those four", _fmt(held_by_four, "", 0))
+    c3.metric("Top 8 longs, percentile in its trailing 3y window", _fmt(rank.iloc[-1], "", 0),
+              f"ranked against {_fmt(n_ranked.iloc[-1], '', 0)} of {RANK_FULL} reports",
+              delta_color="off")
+    c4.metric("Spreads, share of open interest", _fmt(cur["spread_pct"]),
+              _wow(wk["spread_pct"]), delta_color="off")
     st.caption(
         f"Read as \"the four largest longs hold {_fmt(cur['conc_gross_4_long'])} of all long "
         f"positions\": CR is a share of the SIDE TOTAL, not of open interest. On "
         f"{wk.index[-1].date()} that side total is {_fmt(cur['dir_oi'], '', 0)} contracts -- open "
         f"interest {_fmt(cur['open_interest'], '', 0)} less {_fmt(cur['spread_total'], '', 0)} of "
-        f"spreads -- so an open-interest denominator would understate the top four by "
-        f"{_fmt(cur['open_interest'] / cur['dir_oi'], 'x', 2)}. Deltas appear only where the "
-        f"previous report is exactly one week back."
+        f"spreads -- so multiplying that percentage by open interest instead would claim "
+        f"{_fmt(if_oi_denominator, '', 0)} contracts where the four actually hold "
+        f"{_fmt(held_by_four, '', 0)}: an OVERSTATEMENT of {_fmt(overstatement, 'x', 2)}, which is "
+        f"1/(1 - spread share). Deltas need the previous report exactly one week back, and are "
+        f"uncoloured because neither direction is good news."
     )
     _show([
         _p(_conc_rows(wk, "gross"), "% of side total",
@@ -192,16 +209,21 @@ def _concentration(wk: pd.DataFrame, breaks: tuple) -> None:
         "Net concentration nets each account against itself first, so it sits at or below gross; "
         "a wide gross-net gap is a top holder running both sides rather than taking a view. "
         "Neither level compares across markets -- 30% is crowded in Treasuries and loose in a "
-        "thin crypto contract -- which is what the percentile is for. It is blank for a segment's "
-        "first weeks and wherever the trailing window is under 60% occupied."
+        f"thin crypto contract -- which is what the percentile is for. It publishes only once the "
+        f"trailing {RANK_WINDOW_DAYS}-day window holds {RANK_FLOOR} readings ({RANK_MIN_FRAC:.0%} "
+        f"of the {RANK_FULL} a weekly cadence implies), so it stays blank until that many have "
+        f"accumulated after a segment break and never appears on a shorter segment at all. "
+        f"\"3-year\" names the WINDOW, not the sample: the point above ranks against "
+        f"{_fmt(n_ranked.iloc[-1], '', 0)} readings, which is the whole basis it has."
     )
 
 
 def _traders(df: pd.DataFrame, code: str, wk: pd.DataFrame, breaks: tuple) -> None:
     st.subheader("Reporting firms behind the position")
     labels = {c.id: c.label for c in cftc_spec.spec_for(SOURCE).cohorts if c.traders_long}
-    # Leveraged funds first: the cohort whose crowding is actually asked about, and the
-    # one where a handful of firms holding the whole net is common.
+    # Spec order, with leveraged funds as the DEFAULT: the cohort whose crowding is
+    # actually asked about, and the one where a handful of firms holding the whole net
+    # is common.
     order = list(labels)
     cohort = st.selectbox("Cohort", order, format_func=lambda c: labels[c], key="crowd_cohort",
                           index=order.index("lev_money") if "lev_money" in labels else 0)
@@ -214,14 +236,23 @@ def _traders(df: pd.DataFrame, code: str, wk: pd.DataFrame, breaks: tuple) -> No
     per_long = metrics.avg_position_per_trader(g["long"], g["traders_long"])
     per_short = metrics.avg_position_per_trader(g["short"], g["traders_short"])
 
-    usable = int((g["traders_long"].notna() | g["traders_short"].notna()).sum())
-    held = (g["long"].fillna(0) > 0) | (g["short"].fillna(0) > 0)
-    blind = int((held & g["traders_long"].isna() & g["traders_short"].isna()).sum())
-    c1, c2, c3 = st.columns(3)
+    # ONE definition of a hole, used by every coverage number here AND by the
+    # cross-market figure below: a side that HELD a position and published no count for
+    # it. The earlier both-sides-null version called 134741/dealer 421 of 422 weeks
+    # covered while its long count was missing in 69 of them, and disagreed with the
+    # cross-market figure in its own sentence by 3.8x. A coverage number that certifies
+    # a gappy series is worse than no coverage number.
+    hole_long = (g["long"].fillna(0) > 0) & g["traders_long"].isna()
+    hole_short = (g["short"].fillna(0) > 0) & g["traders_short"].isna()
+    n_long, n_short = int((g["long"].fillna(0) > 0).sum()), int((g["short"].fillna(0) > 0).sum())
+
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Firms long / short, latest",
               f"{_fmt(g['traders_long'].iloc[-1], '', 0)} / {_fmt(g['traders_short'].iloc[-1], '', 0)}")
     c2.metric("Contracts per long firm", _fmt(per_long.iloc[-1], "", 0))
-    c3.metric("Weeks with a usable count", f"{usable} / {len(g)}")
+    c3.metric("Long count published", f"{n_long - int(hole_long.sum())} / {n_long} weeks held long")
+    c4.metric("Short count published",
+              f"{n_short - int(hole_short.sum())} / {n_short} weeks held short")
     _show([
         _p([(g["traders_long"], "Firms long", "traders", charts.ACCENT, None),
             (g["traders_short"], "Firms short", "traders", charts.WARN, None)],
@@ -235,8 +266,8 @@ def _traders(df: pd.DataFrame, code: str, wk: pd.DataFrame, breaks: tuple) -> No
     ])
 
     # Coverage across the whole latest report, not just this market: a per-firm measure
-    # that is unavailable for a third of the board is a screen you cannot run, and that
-    # belongs on screen rather than being discovered later.
+    # that is unavailable for much of the board is a screen you cannot run, and that
+    # belongs on screen rather than being discovered later. Same hole definition.
     latest = df["report_date"].max()
     snap = df.loc[(df["report_date"] == latest) & (df["cohort"].isin(order))]
     pos = np.concatenate([_f(snap["long"]).to_numpy(), _f(snap["short"]).to_numpy()])
@@ -245,18 +276,34 @@ def _traders(df: pd.DataFrame, code: str, wk: pd.DataFrame, breaks: tuple) -> No
     miss = (snap["traders_long"].isna() & (_f(snap["long"]).fillna(0) > 0)) | (
         snap["traders_short"].isna() & (_f(snap["short"]).fillna(0) > 0))
     holes = miss.groupby(snap["market_code"], observed=True).any()
+    holed = 100.0 * int(holes.sum()) / len(holes) if len(holes) else float("nan")
+    # The trend is COMPUTED per cohort because the quotable number does not generalise:
+    # lib/metrics cites 4.2% of 2015 rows rising to 28.7% of 2026, but that series is
+    # leveraged-money LONGS. On this one-sided definition lev_money does widen while the
+    # four cohorts together are flat to cyclical (23.9% in 2015, 33.9% in 2018, 27.9% in
+    # 2026), so "growing across the corpus" was a cohort's trend wearing the corpus' name.
+    coh = df.loc[df["cohort"] == cohort]
+    coh_hole = ((_f(coh["long"]).fillna(0) > 0) & coh["traders_long"].isna()) | (
+        (_f(coh["short"]).fillna(0) > 0) & coh["traders_short"].isna())
+    by_year = 100.0 * coh_hole.groupby(pd.to_datetime(coh["report_date"]).dt.year).mean()
+    trend = f"{_fmt(by_year.min())}-{_fmt(by_year.max())} of rows by report year"
+    if len(by_year) > 1:
+        trend += (f", {by_year.index[0]}: {_fmt(by_year.iloc[0])} and {by_year.index[-1]}: "
+                  f"{_fmt(by_year.iloc[-1])}")
     st.caption(
         f"Coverage on the {latest} report of `{SOURCE}`: {_fmt(gap_pct)} of reportable cohort-sides "
         f"holding a position publish no trader count, and {int(holes.sum())} of {len(holes)} markets "
-        f"have at least one such hole -- roughly a third of the current cross-section cannot support "
-        f"a per-firm measure, so a table ranked on one is quietly missing them. Here the count is "
-        f"absent in {blind} of {len(g)} weeks that carried a nonzero position. The null rate is "
-        f"growing across the corpus (4.2% of 2015 rows to 28.7% of 2026), so it is a widening blind "
-        f"spot, not a legacy artifact. Gaps stay gaps: this is a real numerator over an unknown "
-        f"denominator, and interpolating it invents firms. Non-reportables are absent from the "
-        f"selector because traders_* does not exist for that cohort in any family -- they are small "
-        f"BECAUSE they are under the reporting threshold, so nobody counts them. Spread-trader counts "
-        f"exist for some cohorts and are excluded; these are the directional sides only."
+        f"-- {_fmt(holed, '%', 0)} of the current cross-section -- have at least one such hole, so a "
+        f"table ranked on a per-firm measure is quietly missing that many. For {labels[cohort]} on "
+        f"this market the long count is absent in {int(hole_long.sum())} of the {n_long} weeks it "
+        f"held a long position and the short count in {int(hole_short.sum())} of {n_short}; across "
+        f"every market it trades the same gap runs {trend} -- the current year included, so it is "
+        f"not a legacy artifact. Gaps stay gaps: a real numerator over an unknown denominator, and "
+        f"interpolating it invents firms. Non-reportables are absent from the selector because "
+        f"traders_* does not exist for them in any family -- they are small BECAUSE they are under "
+        f"the reporting threshold, so nobody counts them. The spec names a spread-trader column for "
+        f"most reportable cohorts but the ingest stores none, so nothing here could show it: these "
+        f"are the directional sides only."
     )
 
 
@@ -293,19 +340,24 @@ def _spreads(df: pd.DataFrame, wk: pd.DataFrame, summary: pd.DataFrame, breaks: 
         ),
         width="stretch",
     )
+    top = screen["pct"].max()
+    correction = 1.0 / (1.0 - top / 100.0) if pd.notna(top) and top < 100.0 else float("nan")
     st.caption(
-        f"Top 20 of the {len(liquid)} liquid markets on {latest}. Across all {len(snap)} markets that "
-        f"week the median spread share is {_fmt(snap['pct'].median())} and the 75th percentile "
-        f"{_fmt(snap['pct'].quantile(0.75))}, so the rates complex at 40-48% is not typical -- it is "
-        f"where an open-interest denominator is materially wrong, by 1/(1 - spread share). A spread "
-        f"total sums the cohorts that publish one: here every reportable cohort does and "
-        f"non-reportables never do, but legacy commercials and disaggregated producer-merchants have "
-        f"no spread column at all, so the same statistic there is a floor rather than a total."
+        f"Top 20 of the {len(liquid)} liquid markets on {latest}. This screen is always CORE + WIDE "
+        f"whatever the Universe toggle says -- widening the universe changes the time series, not "
+        f"this ranking. Across all {len(snap)} markets that week the median spread share is "
+        f"{_fmt(snap['pct'].median())} and the 75th percentile {_fmt(snap['pct'].quantile(0.75))}, so "
+        f"the {_fmt(screen['pct'].min())}-{_fmt(top)} band here is not typical -- it is where an "
+        f"open-interest denominator is materially wrong, by 1/(1 - spread share), which at the top of "
+        f"this list is {_fmt(correction, 'x', 2)}. Not one complex: the list mixes rates with the "
+        f"adjusted-rate S&P contract, which lib/metrics.directional_oi names separately for that "
+        f"reason. A spread total sums the cohorts that publish one: here every reportable cohort does "
+        f"and non-reportables never do, but legacy commercials and disaggregated producer-merchants "
+        f"have no spread column at all, so the same statistic there is a floor, not a total."
     )
 
 
 def _render() -> None:
-    caveat_block, freshness = _app_helpers()
     df = cache.read(SOURCE)
     summary = cache.market_summary(SOURCE)
     freshness(df["report_date"], "financial-futures report")
@@ -330,6 +382,9 @@ def _render() -> None:
     breaks = tuple(pd.Timestamp(d) for d in segs["start"].iloc[1:])
     st.caption(f"{row['market_full']} — {row['contract_units']} — "
                f"{int(row['n_reports'])} reports from {row['first_report'].date()}, tier {row['tier']}.")
+    # Every "latest" below is THIS MARKET's latest, which on a dead code is years old.
+    # freshness() above is about the feed; this is about the market.
+    market_last_print(pd.Series(wk.index), df["report_date"], str(row["market"]))
     if len(segs) > 1:
         st.caption(
             "Dotted verticals are segment breaks -- a contract re-specification or a hole longer than "
@@ -345,9 +400,22 @@ def _render() -> None:
     _traders(df, code, wk, breaks)
     _spreads(df, wk, summary, breaks)
 
+    # The market-week / per-cohort distinction, proved on the data rather than asserted:
+    # reading the firms section as one market-wide number is this board's most exposed
+    # misconception, since both kinds of column sit in the same table.
+    per_week = df.groupby(["market_code", "report_date"], observed=True)["traders_long"].nunique()
+    last = df.loc[df["market_code"] == code]
+    last = last.loc[last["report_date"] == last["report_date"].max()]
     st.caption(
-        "Concentration, trader counts and open interest are market-week quantities, identical across "
-        "the cohorts of a report, so they are read once per week rather than summed. Where the "
+        "Concentration, open interest and the market-wide `traders_total` are market-week "
+        "quantities, identical across the cohorts of a report, so they are read once per week "
+        "rather than summed. The PER-COHORT counts in the firms section are NOT: `traders_long` "
+        "and `traders_short` come from a different published column per cohort and differ across "
+        f"the cohorts of a week in {_fmt(100.0 * (per_week > 1).mean())} of this file's "
+        f"{len(per_week):,} market-weeks, which is what the cohort selector changes. On "
+        f"{last['report_date'].iloc[0]} this market publishes "
+        f"{int(_f(last['traders_long']).nunique())} distinct per-cohort long counts against a "
+        f"single market-wide total of {_fmt(_f(last['traders_total']).max(), '', 0)}. Where the "
         "published columns do not reconcile exactly: " + cftc_spec.RESIDUAL_EXPLANATION
     )
     caveat_block(SOURCE)
