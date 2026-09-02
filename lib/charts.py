@@ -267,6 +267,9 @@ def spotlight(
     guides: tuple[float, ...] = (),
     breaks: tuple = (),
     height: int = 460,
+    price: pd.Series | None = None,
+    price_label: str = "",
+    price_log: bool = False,
 ) -> go.Figure:
     """One market, one measure. The polished single-series figure.
 
@@ -291,14 +294,64 @@ def spotlight(
       panel satisfies that honestly and still reads as one chart.
     - CLIENT-SIDE RANGE BUTTONS. See RANGE_BUTTONS: the reason the chart feels
       responsive is that zooming never touches the server.
+
+    - PRICE ON TOP, AS ITS OWN PANEL. This is display rule 1 doing real work rather
+      than being a slogan: price and percent-of-open-interest have nothing to do
+      with each other dimensionally, and putting them on one plot with two y-scales
+      would let the scaling choice manufacture whatever visual correlation the
+      author wanted. Stacked panels sharing one x-axis show the same comparison and
+      cannot lie about its strength. The reader compares turning points, which is
+      the only comparison the data supports.
     """
+    has_price = price is not None and price.notna().any()
+    rows = 3 if has_price else 2
+    heights = [0.40, 0.42, 0.18] if has_price else [0.76, 0.24]
     fig = make_subplots(
-        rows=2,
+        rows=rows,
         cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.06,
-        row_heights=[0.76, 0.24],
+        vertical_spacing=0.055 if has_price else 0.06,
+        row_heights=heights,
     )
+    # Row indices shift when the price panel is present, so name them once rather
+    # than sprinkling conditionals through every trace and axis call below.
+    r_price = 1 if has_price else None
+    r_main = 2 if has_price else 1
+    r_oi = 3 if has_price else 2
+
+    if has_price:
+        fig.add_trace(
+            go.Scatter(
+                x=price.index,
+                y=price.to_numpy(),
+                mode="lines",
+                line=dict(color=INK_SECONDARY, width=1.6),
+                connectgaps=False,
+                hovertemplate="%{y:,.2f}<extra></extra>",
+                name="",
+            ),
+            row=r_price,
+            col=1,
+        )
+        # A log axis defaults to labelling every minor tick, which on a 15x move
+        # prints "2 3 4 5 6 7 8 9 10k 2 3" down the side -- noise that reads as a
+        # broken axis. dtick=1 is one decade per label; the crosshair carries the
+        # exact value, and the panel is there for shape.
+        log_ticks = dict(dtick=1, tickformat="~s", minor=dict(showgrid=False)) if price_log else {}
+        fig.update_yaxes(
+            title_text=price_label or "price",
+            row=r_price,
+            col=1,
+            gridcolor=GRID,
+            zeroline=False,
+            showline=False,
+            ticks="",
+            type="log" if price_log else "linear",
+            title_font=dict(size=12, color=MUTED),
+            tickfont=dict(size=11.5, color=MUTED),
+            **log_ticks,
+        )
+        fig.update_xaxes(showgrid=False, showline=False, ticks="", row=r_price, col=1)
 
     signed = not metrics.is_ratio_safe(kind)
     fig.add_trace(
@@ -313,7 +366,7 @@ def spotlight(
             hovertemplate="%{y:,.2f} " + unit + "<extra></extra>",
             name="",
         ),
-        row=1,
+        row=r_main,
         col=1,
     )
     fig.add_trace(
@@ -326,14 +379,14 @@ def spotlight(
             hovertemplate="%{y:,.0f} contracts open<extra></extra>",
             name="",
         ),
-        row=2,
+        row=r_oi,
         col=1,
     )
 
     if signed:
-        fig.add_hline(y=0, line=dict(color=BASELINE, width=1.2), row=1, col=1)
+        fig.add_hline(y=0, line=dict(color=BASELINE, width=1.2), row=r_main, col=1)
     for g in guides:
-        fig.add_hline(y=g, line=dict(color=MUTED, width=1, dash="dot"), row=1, col=1)
+        fig.add_hline(y=g, line=dict(color=MUTED, width=1, dash="dot"), row=r_main, col=1)
     for b in breaks:
         # A contract re-specification. Levels either side are not comparable, so
         # the break is drawn rather than left for a caption to mention.
@@ -366,7 +419,7 @@ def spotlight(
 
     fig.update_yaxes(
         title_text=unit,
-        row=1,
+        row=r_main,
         col=1,
         gridcolor=GRID,
         griddash="solid",
@@ -378,7 +431,7 @@ def spotlight(
     )
     fig.update_yaxes(
         title_text="open interest",
-        row=2,
+        row=r_oi,
         col=1,
         gridcolor=GRID,
         zeroline=False,
@@ -399,7 +452,7 @@ def spotlight(
         showgrid=False,
         showline=False,
         ticks="",
-        row=1,
+        row=1,  # the topmost panel, whichever it is -- the buttons sit above it
         col=1,
         rangeselector=dict(
             buttons=list(RANGE_BUTTONS),
@@ -421,7 +474,7 @@ def spotlight(
         linewidth=1,
         ticks="",
         tickfont=dict(size=11.5, color=MUTED),
-        row=2,
+        row=r_oi,  # only the bottom panel carries the date labels
         col=1,
     )
     # The crosshair: readers aim at a date, never at a 2px line.

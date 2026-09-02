@@ -44,8 +44,17 @@ SIGNED_KINDS = frozenset({"net", "flow", "change", "net_share", "purity"})
 
 #: Quantities that are non-negative by construction, where a percent change is
 #: meaningful.
+#:
+#: "price" is here because a price level is positive, so a percent change on it is
+#: the number a reader actually wants. Note this is a claim about the QUANTITY, not
+#: a promise about any particular series: a futures price can print negative (WTI
+#: did in April 2020), and a spread between two prices is signed and belongs under
+#: "net". Only an outright level goes here.
 UNSIGNED_KINDS = frozenset(
-    {"gross", "open_interest", "spread", "long", "short", "traders", "share", "gross_share"}
+    {
+        "gross", "open_interest", "spread", "long", "short", "traders",
+        "share", "gross_share", "price",
+    }
 )
 
 
@@ -456,6 +465,49 @@ def net_flow_balances(flows_by_cohort: pd.DataFrame) -> pd.Series:
     offering one, since a caller passing tol=3 silently got no check at all.)
     """
     return flows_by_cohort.sum(axis=1)
+
+
+def asof(
+    value_dates: pd.Series, values: pd.Series, at_dates: pd.Series
+) -> pd.Series:
+    """Sample `values` as of each date in `at_dates`: the last one at or BEFORE it.
+
+    Lives here rather than in a panel because the direction is a correctness
+    property, not a display choice. Positioning is reported as of a Tuesday and
+    prices trade daily, so pairing them means picking a price for that Tuesday --
+    and `direction="nearest"` or a forward fill would pick a price from LATER,
+    putting a number that did not exist yet beside a position. That is look-ahead
+    entering through a join instead of through a statistic, which is the variety
+    that survives review because no ranking function is involved.
+
+    Measured on the real data: strictly backward gives 0 of 846 NASDAQ report dates
+    a price dated after the report, with a median lag of 0 days and a maximum of 4
+    (a holiday Tuesday falling back to the previous Friday). A forward join leaks
+    on 1 row per market -- small, and the wrong kind of small.
+
+    Returns a Series indexed by `at_dates`, NaN where no earlier value exists.
+    """
+    left = pd.DataFrame({"_at": pd.to_datetime(pd.Series(at_dates)).to_numpy()})
+    right = pd.DataFrame(
+        {
+            "_on": pd.to_datetime(pd.Series(value_dates)).to_numpy(),
+            "_v": pd.to_numeric(pd.Series(values), errors="coerce").to_numpy(),
+        }
+    ).dropna(subset=["_on"])
+
+    if left.empty or right.empty:
+        return pd.Series(dtype=float, index=pd.DatetimeIndex(left["_at"]), name="asof")
+
+    merged = pd.merge_asof(
+        left.sort_values("_at"),
+        right.sort_values("_on"),
+        left_on="_at",
+        right_on="_on",
+        direction="backward",  # never "nearest", never "forward" -- see above
+    )
+    return pd.Series(
+        merged["_v"].to_numpy(), index=pd.DatetimeIndex(merged["_at"]), name="asof"
+    )
 
 
 def clamp_percentage(values: pd.Series, *, lo: float = 0.0, hi: float = 100.0) -> pd.Series:

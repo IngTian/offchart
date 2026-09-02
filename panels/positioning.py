@@ -34,11 +34,19 @@ import io
 import pandas as pd
 import streamlit as st
 
-from lib import cache, charts, metrics, segments, theme
+from lib import cache, charts, metrics, pricemap, segments, theme
 from lib.ui import caveat_block
 from panels import Board
 
 SOURCE = "cftc_tff_fut"
+PRICE_SOURCE = "prices"
+
+#: Series that have compounded enough over their history that a linear axis is
+#: useless -- an equity index or a coin spends its first decade indistinguishable
+#: from zero, which hides the early positioning it is meant to sit beside. Rates,
+#: FX and the vol index stay linear, where the level itself is the information.
+_LOG_PRICE = frozenset({"^GSPC", "^NDX", "^DJI", "^RUT", "^SP400",
+                        "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD"})
 
 #: cohort id -> the label a person uses. Order is the report's own order, dealers
 #: through to the small traders, so the checkbox row reads as a spectrum from the
@@ -93,6 +101,30 @@ def _measure(sub: pd.DataFrame, cohorts: tuple[str, ...]) -> pd.DataFrame:
         out["share"].reset_index(drop=True), pd.Series(out.index), horizon_weeks=2
     ).to_numpy()
     return out
+
+
+@st.cache_data(show_spinner=False, max_entries=32)
+def _price_at(symbol: str, dates: tuple) -> pd.Series:
+    """The mapped price series, sampled AS OF each CFTC report date.
+
+    As-of, backward, and that direction is the whole point. A report date is a
+    Tuesday; markets close daily; so the price beside a position must be the last
+    close at or before that Tuesday. `direction="nearest"` or a forward fill would
+    quietly put a price that did not exist yet next to a position -- look-ahead
+    smuggled in through a join rather than through a statistic, which is the kind
+    that survives review.
+
+    Returns an empty Series when the symbol is not in the store, so a missing price
+    source degrades to "no price panel" rather than taking the board down.
+    """
+    px = cache.read("prices")
+    if px.empty or "symbol" not in px.columns:
+        return pd.Series(dtype=float)
+    one = px[px["symbol"] == symbol]
+    if one.empty:
+        return pd.Series(dtype=float)
+
+    return metrics.asof(one["date"], one["close"], pd.Series(list(dates)))
 
 
 def _breaks(sub: pd.DataFrame) -> tuple:
@@ -224,32 +256,31 @@ def _pull_button() -> None:
         return
 
     log = io.StringIO()
-    with st.spinner("Asking CFTC for new reports..."):
-        try:
-            with contextlib.redirect_stdout(log):
-                report = ingest_job.run_one(get_source(SOURCE), backfill=False)
-        except Exception as exc:  # noqa: BLE001 -- surfaced, not swallowed
-            st.session_state["wb_pull"] = f"Pull failed. {type(exc).__name__}: {exc}"
-            return
-
-    if report is None:
-        st.session_state["wb_pull"] = (
-            "Pull failed -- nothing was written. " + (log.getvalue().strip().splitlines() or [""])[-1]
-        )
-        return
+    done: list[str] = []
+    with st.spinner("Fetching new reports and closes..."):
+        # Positioning and prices, in that order: a failed price pull must not stop
+        # the CFTC data from landing, since the board works without a price panel
+        # and does not work without positions.
+        for sid in (SOURCE, PRICE_SOURCE):
+            try:
+                with contextlib.redirect_stdout(log):
+                    report = ingest_job.run_one(get_source(sid), backfill=False)
+            except Exception as exc:  # noqa: BLE001 -- surfaced, not swallowed
+                done.append(f"{sid} failed ({type(exc).__name__})")
+                continue
+            if report is None:
+                done.append(f"{sid} failed, nothing written")
+            elif report["changed"]:
+                done.append(
+                    f"{sid}: +{report['rows_new']:,} new, {report['rows_revised']:,} revised"
+                )
+            else:
+                done.append(f"{sid}: already current ({report['rows_total']:,} rows)")
 
     # Held in session_state rather than printed here, because the rerun below
     # rebuilds the page and would wipe anything written before it. A pull that
     # reports nothing is indistinguishable from a pull that did nothing.
-    if report["changed"]:
-        st.session_state["wb_pull"] = (
-            f"Pulled {report['rows_new']:,} new rows and revised "
-            f"{report['rows_revised']:,}, now {report['rows_total']:,} total."
-        )
-    else:
-        st.session_state["wb_pull"] = (
-            f"Already current -- {report['rows_total']:,} rows, nothing new to fetch."
-        )
+    st.session_state["wb_pull"] = " · ".join(done)
 
     # Clear every cached read: the store's own stat token would invalidate
     # cache.read on its own, but _market_frame and market_summary are keyed on the
@@ -348,6 +379,9 @@ def _panel() -> None:
     )
     _hero(frame, who)
 
+    ref = pricemap.for_code(code)
+    price = _price_at(ref.symbol, tuple(frame.index)) if ref else pd.Series(dtype=float)
+
     slug = f"{code}-{'-'.join(chosen)}".replace("+", "plus").replace(" ", "")
     st.plotly_chart(
         charts.spotlight(
@@ -356,12 +390,35 @@ def _panel() -> None:
             unit="% of open interest",
             kind="net_share",
             breaks=_breaks(sub),
+            price=price if not price.empty else None,
+            price_label=ref.label if ref else "",
+            # Log for anything that has compounded over decades -- an equity index
+            # or a coin on a linear axis spends its first fifteen years flat on the
+            # floor, which hides exactly the early positioning history the chart is
+            # there to sit beside.
+            price_log=bool(ref and ref.symbol in _LOG_PRICE),
+            height=620 if not price.empty else 460,
         ),
         width="stretch",
         config=charts.png_config(f"watchboard-{slug}"),
         key=f"chart-{slug}",
     )
     _copy_button(slug)
+
+    if ref:
+        note = f"Price is **{ref.label}**, sampled as of each Tuesday report date."
+        if ref.proxy:
+            note += f" A proxy, not the reported contract: {ref.proxy}."
+        st.caption(
+            note + " Positions are as of Tuesday but published Friday 15:30 ET, so "
+            "the price beside a position is contemporaneous with the position and "
+            "not with the moment you could first have seen it."
+        )
+    else:
+        st.caption(
+            f"No price series is mapped to {code}. See `lib/pricemap.py` -- entries "
+            "are added one at a time, after the symbol has been resolved."
+        )
 
     with st.expander("The last 12 weeks, as numbers"):
         tail = frame.tail(12)[["net", "open_interest", "share", "pctile"]].copy()
@@ -398,7 +455,7 @@ def render() -> None:
             unsafe_allow_html=True,
         )
     _panel()
-    caveat_block(SOURCE)
+    caveat_block(SOURCE, PRICE_SOURCE)
 
 
 BOARD = Board(

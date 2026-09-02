@@ -445,6 +445,67 @@ def test_avg_position_per_trader_null_and_zero_traders_give_nan(dtype: str) -> N
     assert np.isfinite(out.dropna().to_numpy(dtype=float)).all()
 
 
+# --------------------------------------------------------------------------- #
+# asof -- look-ahead entering through a join rather than a statistic
+# --------------------------------------------------------------------------- #
+def test_asof_is_strictly_backward() -> None:
+    """Sampling a daily series at a weekly date must never reach forward.
+
+    This is the price-beside-positioning join. Positions are as of a Tuesday; if
+    the join picked the NEAREST close it would sometimes pick Wednesday's, putting
+    a price that did not exist yet beside the position. No ranking function is
+    involved, which is exactly why this variety of look-ahead survives review.
+    """
+    # Prices on Mon/Wed only, so Tuesday has no same-day close and the direction
+    # of the fallback is unambiguous: Monday (before) not Wednesday (after).
+    price_dates = pd.to_datetime(["2026-01-05", "2026-01-07", "2026-01-12", "2026-01-14"])
+    prices = pd.Series([100.0, 999.0, 200.0, 888.0])
+    at = pd.Series(pd.to_datetime(["2026-01-06", "2026-01-13"]))  # two Tuesdays
+
+    got = M.asof(pd.Series(price_dates), prices, at)
+    # Monday's close, never Wednesday's. 999 and 888 are the future.
+    assert list(got.to_numpy()) == [100.0, 200.0]
+    assert 999.0 not in set(got.dropna())
+
+    # Before the series starts there is nothing to sample, and NaN is the only
+    # honest answer -- a backfill here would invent a price.
+    early = M.asof(pd.Series(price_dates), prices, pd.Series(pd.to_datetime(["2025-12-30"])))
+    assert early.isna().all()
+
+
+def test_asof_forward_join_would_leak_and_is_not_what_we_do() -> None:
+    """The negative control: prove the wrong direction is detectably wrong.
+
+    Without this, `asof` could quietly become a forward join and every other
+    assertion here would still pass on data where the two agree.
+    """
+    dates = pd.Series(pd.to_datetime(["2026-01-05", "2026-01-07"]))
+    vals = pd.Series([1.0, 2.0])
+    at = pd.Series(pd.to_datetime(["2026-01-06"]))
+
+    ours = M.asof(dates, vals, at)
+    leaky = pd.merge_asof(
+        pd.DataFrame({"_at": at}), pd.DataFrame({"_on": dates, "_v": vals}),
+        left_on="_at", right_on="_on", direction="forward",
+    )["_v"]
+    assert float(ours.iloc[0]) == 1.0
+    assert float(leaky.iloc[0]) == 2.0, "forward join must differ, or this proves nothing"
+
+
+def test_asof_handles_empty_inputs() -> None:
+    empty = pd.Series([], dtype="datetime64[ns]")
+    at = pd.Series(pd.to_datetime(["2026-01-06"]))
+    assert M.asof(empty, pd.Series([], dtype=float), at).isna().all()
+    assert M.asof(at, pd.Series([1.0]), empty).empty
+
+
+def test_price_is_a_known_unsigned_quantity() -> None:
+    """A price level is positive, so a percent change on it is meaningful -- and the
+    gate must have an OPINION rather than raising when a panel formats one."""
+    assert M.is_ratio_safe("price") is True
+    assert "price" in M.UNSIGNED_KINDS
+
+
 def test_clamp_percentage_drops_impossible_prints() -> None:
     """A percentage outside [0, 100] is a broken input and NaN is the honest render
     of one -- but on the COMMITTED data this guard never fires, and saying so is
