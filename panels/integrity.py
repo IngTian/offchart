@@ -32,7 +32,19 @@ test is therefore not a strict test but a broken one: it fires on the publisher'
 rounding and says nothing about the data. Tolerances live in lib/cftc_spec -- and
 the two level tolerances are set one contract wider than the corpus maximum, so a
 zero count there is a statement about calibration, not a test that passed. The
-board says so where the counts are displayed.
+board says so where the counts are displayed, and STOPS saying so the moment one
+of those counters is nonzero: the calibration sentence is gated on the zero it
+explains, because a breach means the tolerance no longer bounds the corpus and
+"nothing here can breach it" would be the one caption on this board that is
+strictly false.
+
+AND A TOLERANCE IS NOT A SPAN TEST. Invariant 3 compares our week-over-week diff
+against the published change_* columns, so it needs to know which row pairs are a
+week apart. round(days/7) == 1 is not that test -- round(4/7) is 1 as well -- and
+using it made this board manufacture 141 of its own 228 headline exceptions out of
+147 four-day re-issues. The gate is metrics.SPAN_TOLERANCE_DAYS, read off the
+library rather than restated, and the pairs it drops are reported as a named
+exclusion count with their spans measured rather than assumed.
 """
 from __future__ import annotations
 
@@ -40,7 +52,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from lib import cache, cftc_spec, charts, segments
+from lib import cache, cftc_spec, charts, metrics, segments
 from lib.ui import caveat_block, freshness
 from panels import Board
 
@@ -161,10 +173,13 @@ def _scan(source_id: str, token: tuple[int, str]) -> dict:
     # ---- identity 3: our diff vs the published change_* columns -------------
     # metrics.flow and metrics.weeks_between take one series and there is no
     # grouped variant, so the same rule is applied within (market_code, cohort)
-    # here -- the CORRECTED rule: a span is one week only within a day of seven,
-    # never round(days/7) == 1, because round(4/7) is 1 too and a four-day holiday
-    # span is not a week. Those pairs are excluded and counted as `relabel`;
-    # admitting them would make the board manufacture its own failures.
+    # here -- and it is metrics.flow's rule, read off the library constant rather
+    # than restated, so the gate cannot drift from the function it mirrors: a span
+    # is one week only within SPAN_TOLERANCE_DAYS of seven, never
+    # round(days/7) == 1, because round(4/7) is 1 too and a four-day re-issue is
+    # not a week. Those pairs are excluded and counted as `relabel`, which is the
+    # difference between a named exclusion and a manufactured failure: admitting
+    # them put 141 of legacy_fut's 186 headline exceptions into the data itself.
     sub = df.sort_values(["market_code", "cohort", "_d"], kind="mergesort")
     grp = sub.groupby(["market_code", "cohort"], observed=True, sort=False)
     days = grp["_d"].diff().dt.days
@@ -174,7 +189,10 @@ def _scan(source_id: str, token: tuple[int, str]) -> dict:
         axis=1,
     ).max(axis=1)
     cand = err.notna() & days.notna()
-    ok = cand & ((days - 7).abs() <= 1)
+    ok = cand & ((days - 7.0).abs() <= metrics.SPAN_TOLERANCE_DAYS)
+    # The relabel set is what the ROUNDED rule would have accepted and this one
+    # refuses: 4, 5, 9 and 10 days. Which of those actually occur is a property of
+    # the data, so `gaps` is carried through and every caption reads it off.
     relabel = cand & ~ok & ((days / 7.0).round() == 1)
     tagged = sub.assign(err=err.astype("float64"), gap_days=days)
     e = err[ok].astype("float64")
@@ -220,7 +238,9 @@ def _scan(source_id: str, token: tuple[int, str]) -> dict:
                       "gap_days": gaps, "days_off_a_week": dev,
                       "rounds to (weeks)": (gaps / 7.0).round()})
         .dropna(subset=["gap_days"])
-        .loc[dev > 1]
+        # Off-table means outside the span tolerance the library actually applies,
+        # so the classification below and metrics.flow agree on what a week is.
+        .loc[dev > metrics.SPAN_TOLERANCE_DAYS]
         .assign(previous=lambda f: f["previous"].dt.date,
                 report_date=lambda f: f["report_date"].dt.date,
                 gap_days=lambda f: f["gap_days"].astype("int64"),
@@ -324,17 +344,36 @@ def _history(sid: str, sc: dict) -> None:
         height_per_panel=165,
     )
     st.plotly_chart(fig, key=f"history_{sid}")
+    # Three states, and the rounding conclusion is asserted in exactly one of
+    # them. The middle panel showing a residual larger than the tolerance is the
+    # same picture as the middle panel showing rounding noise, at a different
+    # scale, so the caption must not carry the conclusion when the tolerance broke.
+    if not sc["resid"]["n"]:
+        body = (
+            "The middle panel is empty and the argument of invariant 2 cannot be made on "
+            f"this data: none of the {sc['n_mw']:,} market-weeks has a complete set of "
+            "cohort rows, so no residual was computable. Treat the flat panel as missing "
+            "evidence, not as a reconciliation."
+        )
+    elif sc["resid"]["n_fail"]:
+        body = (
+            "Read the middle and bottom panels together -- but not as invariant 2 "
+            f"passing. Open interest in this source reaches {sc['oi_max']:,.0f} contracts "
+            f"and the worst residual in it is {sc['resid']['max']:,.0f}, which clears the "
+            f"{cftc_spec.OI_RESIDUAL_TOL:g}-contract tolerance on "
+            f"{sc['resid']['n_fail']:,} of the {sc['resid']['n']:,} measurable "
+            "market-weeks. That is a break to explain, not rounding to characterise."
+        )
+    else:
+        body = (
+            "Read the middle and bottom panels together -- that pairing is the whole "
+            "argument of invariant 2. Open interest in this source reaches "
+            f"{sc['oi_max']:,.0f} contracts while the worst residual anywhere in it is "
+            f"{sc['resid']['max']:,.0f}. A missing position bucket would scale with the "
+            "market; rounding does not."
+        )
     st.caption(
-        ("Read the middle and bottom panels together -- that pairing is the whole "
-         "argument of invariant 2. Open interest in this source reaches "
-         f"{sc['oi_max']:,.0f} contracts while the worst residual anywhere in it is "
-         f"{sc['resid']['max']:,.0f}. A missing position bucket would scale with the "
-         "market; rounding does not."
-         if sc["resid"]["n"] else
-         "The middle panel is empty and the argument of invariant 2 cannot be made on "
-         f"this data: none of the {sc['n_mw']:,} market-weeks has a complete set of "
-         "cohort rows, so no residual was computable. Treat the flat panel as missing "
-         "evidence, not as a reconciliation.")
+        body
         + (f" Dotted line: {segments.LEGACY_WEEKLY_FROM}, before which legacy "
            "reporting is not weekly." if brk else "")
     )
@@ -352,6 +391,22 @@ def _exact_split(scans: dict[str, dict], key: str) -> dict[str, tuple[int, int]]
         out[grp][0] += v[key]["n"] - v[key]["zero"]
         out[grp][1] += v[key]["n"]
     return {k: (a, b) for k, (a, b) in out.items() if b}
+
+
+def _relabel_spans(scans: dict[str, dict]) -> dict[int, int]:
+    """gap in days -> excluded pairs, summed over sources.
+
+    The exclusion filter admits 4, 5, 9 and 10 days -- everything round(days/7)
+    calls one week and the span tolerance does not. Which of those the corpus
+    contains is a fact about the data (today: 147 pairs, all four-day, all in
+    legacy_fut), so every caption naming the spans reads them off here rather than
+    hard-coding "4-day", which would go quietly wrong on the next ingest.
+    """
+    out: dict[int, int] = {}
+    for v in scans.values():
+        for gap, k in v["chg"]["relabel"]["gaps"].items():
+            out[gap] = out.get(gap, 0) + k
+    return out
 
 
 def _invariant_net(sc: dict, scans: dict[str, dict]) -> None:
@@ -413,12 +468,32 @@ def _invariant_oi(sc: dict, scans: dict[str, dict]) -> None:
                "source, which is the strongest form this evidence takes.",
           key="resid_buckets")
     st.info(cftc_spec.RESIDUAL_EXPLANATION)
+    # Rendered verbatim above, figures included, and its figures are a measurement
+    # of an earlier corpus. If the current one breaches the tolerance then that
+    # paragraph is the most authoritative-looking false statement on the board, so
+    # it gets contradicted here rather than silently outranked by the table below.
+    res_fails = sum(v["resid"]["n_fail"] for v in scans.values())
+    if res_fails:
+        st.warning(
+            f"The paragraph above is lib/cftc_spec's record of an earlier measurement, and "
+            f"the ingested data no longer matches it: {res_fails:,} market-week(s) clear "
+            f"the {cftc_spec.OI_RESIDUAL_TOL:g}-contract tolerance, so the range it quotes "
+            "does not bound what is on screen. The rounding reading is unavailable until "
+            "that is explained."
+        )
     # Every number in the correction below is read off `scans` rather than quoted,
     # including the ones cftc_spec states in words: a caption that recomputes
     # cannot contradict the table printed under it.
     live = [v["resid"] for v in scans.values() if v["resid"]["n"]]
-    nz = [r for r in live if r["neg"] or r["pos"]]
-    neg_bigger = sum(1 for r in nz if r["neg"] > r["pos"])
+    # The sentence below claims the residual GOES NEGATIVE, so this counts sources
+    # with a negative residual and not sources with any nonzero one. The two agree
+    # on today's data (6 and 6) and separate the moment one source's residual is
+    # pushed wholly positive -- which is precisely the case where the sign
+    # argument, the disproof of the unpublished-spread reading, has stopped
+    # holding and must not be reported as if it still did.
+    neg_src = [r for r in live if r["neg"]]
+    nonzero = [r for r in live if r["neg"] or r["pos"]]
+    neg_bigger = sum(1 for r in neg_src if r["neg"] > r["pos"])
     all_zero = [k for k, v in scans.items()
                 if v["resid"]["n"] and not (v["resid"]["neg"] or v["resid"]["pos"])]
     head = (
@@ -443,12 +518,18 @@ def _invariant_oi(sc: dict, scans: dict[str, dict]) -> None:
         st.caption(
             head + "The table below measures the disproof source by source. A "
             "non-negative missing spread could only push the residual positive, and "
-            + (f"in {len(nz)} of the {len(live)} measurable sources the residual goes "
+            + (f"in {len(neg_src)} of the {len(live)} measurable sources the residual goes "
                f"negative at all, with the negative side the larger of the two in "
-               f"{neg_bigger} of those {len(nz)}. "
-               if nz else
+               f"{neg_bigger} of those {len(neg_src)}. "
+               if neg_src else
                f"in all {len(live)} measurable sources the residual is identically "
-               "zero, so a missing spread would have to be identically zero too. ")
+               "zero, so a missing spread would have to be identically zero too. "
+               if not nonzero else
+               f"on this data it never does: the residual is non-negative in all "
+               f"{len(live)} measurable sources, which is also what a missing spread "
+               "would look like, so the sign half of the disproof is unavailable here "
+               "and only the range, the correlation and the exactly-zero sources stand "
+               "against the spread reading. ")
             + f"The residual stays inside {lo:,.0f}..{hi:,.0f} across every source while "
               f"open interest reaches {max(v['oi_max'] for v in scans.values()):,.0f} "
               "contracts, where a real position bucket would scale with the market."
@@ -469,7 +550,15 @@ def _invariant_oi(sc: dict, scans: dict[str, dict]) -> None:
              else f"{v['resid']['lo']:,.0f} .. {v['resid']['hi']:,.0f}",
              "negative": v["resid"]["neg"], "positive": v["resid"]["pos"],
              "exactly zero": v["resid"]["zero"],
-             "corr with OI": None if np.isnan(v["resid"]["corr"]) else round(v["resid"]["corr"], 4),
+             # A string column, because None in a float column renders as a raw
+             # "NaN" beside a measured row count and reads as a broken cell rather
+             # than as an absent statistic. The two absences are different and both
+             # are named: nothing measured at all, versus a residual with no
+             # variance for a correlation to exist over (disagg_fut, exactly zero
+             # on all 184,229 of its market-weeks).
+             "corr with OI": ("n/a" if not v["resid"]["n"]
+                              else "undefined" if np.isnan(v["resid"]["corr"])
+                              else f"{v['resid']['corr']:+.4f}"),
              "largest OI": f"{v['oi_max']:,.0f}"}
             for k, v in scans.items()
         ]),
@@ -493,22 +582,35 @@ def _invariant_change(sc: dict, scans: dict[str, dict]) -> None:
         if v["chg"]["n"]:
             grp = "combined-basis" if cftc_spec.spec_for(sid).is_combined else "futures-only"
             off_by_one[grp].append(100.0 - v["chg"]["exact"])
-    st.caption(
+    rule = (
         "Only pairs whose calendar span is within a day of seven are compared. CFTC "
         "skips weeks, so a one-row diff is not a one-week change -- and round(days/7) "
         "is not the test either, because round(4/7) is 1 and a four-day holiday span "
-        "is not a week. Exact agreement is not the pass test: measured here, "
-        + " and ".join(
-            f"{grp} datasets fall short of exact on "
-            f"{min(vals):.1f}-{max(vals):.1f}% of comparisons"
-            for grp, vals in off_by_one.items() if vals
-        )
-        + f", and all but the exceptions counted below stay inside the "
-          f"{cftc_spec.CHANGE_FIELD_TOL:g}-contract tolerance. Same mechanism as "
-          "invariant 1 -- independently rounded columns"
-        + (", and the combined-basis reports carry more of it because the "
-           "delta-equivalent option figures are rounded independently of the levels they "
-           "are added to." if off_by_one["combined-basis"] else ".")
+        "is not a week. "
+    )
+    # The rates are a join over whatever groups have comparisons, so it can be
+    # empty -- a one-report-date corpus has no pair spanning a week anywhere. That
+    # state used to render "measured here, , and all but the exceptions...", and
+    # the sentence it was inside claimed a tolerance held over nothing.
+    rates = " and ".join(
+        f"{grp} datasets fall short of exact on "
+        f"{min(vals):.1f}-{max(vals):.1f}% of comparisons"
+        for grp, vals in off_by_one.items() if vals
+    )
+    st.caption(
+        rule
+        + ("Exact agreement is not the pass test: measured here, " + rates
+           + f", and all but the exceptions counted below stay inside the "
+             f"{cftc_spec.CHANGE_FIELD_TOL:g}-contract tolerance. Same mechanism as "
+             "invariant 1 -- independently rounded columns"
+           + (", and the combined-basis reports carry more of it because the "
+              "delta-equivalent option figures are rounded independently of the levels "
+              "they are added to." if off_by_one["combined-basis"] else ".")
+           if rates else
+           "No source on this data holds a single pair of rows spanning a week, so there "
+           "is no exact-agreement rate to quote and nothing at all behind this "
+           "invariant's counters: it was not evaluated. An empty comparison set is a "
+           "coverage statement, never a pass.")
     )
     if chg["n_bad"]:
         dates = chg["bad_dates"]
@@ -527,7 +629,12 @@ def _invariant_change(sc: dict, scans: dict[str, dict]) -> None:
         )
         st.dataframe(chg["bad"], hide_index=True)
     else:
-        st.caption("No comparison in this source clears the tolerance.")
+        # "Nothing clears the tolerance" is also true of nothing at all, so which
+        # of the two it is has to be on screen beside the empty metrics.
+        st.caption("No comparison in this source clears the tolerance."
+                   if chg["n"] else
+                   "There is nothing here to clear it: this source holds no pair of rows "
+                   "a week apart, so nothing was compared.")
     rel = chg["relabel"]
     if rel["n"]:
         st.caption(
@@ -544,10 +651,15 @@ def _invariant_change(sc: dict, scans: dict[str, dict]) -> None:
 def _feeds(scans: dict[str, dict]) -> None:
     st.subheader("Feed health and cadence, all sources")
     today = pd.Timestamp.today().normalize()
+    # Via lib.cache.file_stats, which is cached and column-projected. A panel does
+    # not import lib.store and does not stat a file itself: the size on screen has
+    # to come from the same cache key that decided whether to re-read the file, or
+    # the two can disagree about which version of it is being described.
+    on_disk = {k: (cache.file_stats(k) or {}).get("bytes", 0) for k in scans}
     st.dataframe(
         pd.DataFrame([
-            {"source": k, "rows": v["n_rows"], "market-weeks": v["n_mw"],
-             "incomplete mw": v["n_incomplete"],
+            {"source": k, "rows": v["n_rows"], "MB": round(on_disk[k] / 1e6, 1),
+             "market-weeks": v["n_mw"], "incomplete mw": v["n_incomplete"],
              "markets": v["n_codes"], "reports": v["n_reports"],
              "first": v["first"], "latest": v["last"],
              "age (d)": (today - pd.Timestamp(v["last"])).days,
@@ -571,7 +683,9 @@ def _feeds(scans: dict[str, dict]) -> None:
         "-- those levels are not one comparable series and a percentile must not span "
         "the seam. `holes` counts codes with a gap over a year, which includes outright "
         "code reuse. `gaps excluded` is the pairs invariant 3 refused to compare "
-        "because their span is not within a day of a week."
+        "because their span is not within a day of a week. `MB` is the committed "
+        "parquet, from lib.cache.file_stats -- a file that stops growing while its age "
+        "column climbs is the other shape a stopped feed takes."
     )
     other = cache.read("openrouter_pricing")
     if not other.empty:
@@ -600,22 +714,37 @@ def _cadence(sc: dict, scans: dict[str, dict]) -> None:
     # The same column the table below shows, so the prose cannot classify a gap
     # differently from the row the reader is looking at.
     weeks = off["rounds to (weeks)"]
+    # Partitioned on the rounded week count, which is exhaustive over `off`: every
+    # off-table gap rounds to zero, to one, or to two or more. An earlier taxonomy
+    # keyed on gap_days < min(WEEKLY_GAPS) instead, which put the three-day gaps in
+    # with the four-day ones (5 "hazards" where there are 2) and left anything that
+    # was neither early nor short -- the 11-day 2001-12-28 pair -- in no class at all.
     mislabelled = off[weeks == 1]  # 4-5 and 9-10 days: round(days/7) says one week
     too_short = off[weeks == 0]  # 1-3 days: rounds to zero weeks
     multi = off[weeks >= 2]
-    st.caption(
-        f"**Integer-week check, selected source.** {n_gaps - len(off):,} of "
-        f"{n_gaps:,} gaps are within one day of a whole number of weeks; worst "
-        f"deviation {sc['worst_dev']} day(s). That is what makes round(days/7) exact, "
-        "and it is what lib.metrics.flow relies on to label a horizon."
-        + (" Every gap in this source clears that, so there is nothing to classify below."
-           if not len(off) else
-           f" The {len(off)} that do not split three ways: {len(multi)} round to two or "
-           f"more weeks and {len(too_short)} round to zero -- both harmless, because "
-           "metrics.flow(horizon_weeks=1) returns NaN across a span it does not label as "
-           f"one week -- while {len(mislabelled)} round to exactly one week without being "
-           "one, and only those are a hazard.")
-    )
+    if not n_gaps:
+        st.caption(
+            "**Integer-week check, selected source.** This source holds a single report "
+            "date, so there is no gap to measure and the cadence here is unmeasured "
+            "rather than confirmed."
+        )
+    else:
+        st.caption(
+            f"**Integer-week check, selected source.** {n_gaps - len(off):,} of "
+            f"{n_gaps:,} gaps are within {metrics.SPAN_TOLERANCE_DAYS:g} day of a whole "
+            f"number of weeks; worst deviation {sc['worst_dev']} day(s). That "
+            f"{metrics.SPAN_TOLERANCE_DAYS:g} is metrics.SPAN_TOLERANCE_DAYS, which is "
+            "what lets flow accept a 6- or an 8-day gap as one week and refuse every "
+            "other span."
+            + (" Every gap in this source clears that, so there is nothing to classify "
+               "below."
+               if not len(off) else
+               f" The {len(off)} that do not split three ways: {len(multi)} round to two or "
+               f"more weeks and {len(too_short)} round to zero -- both harmless, because "
+               "metrics.flow(horizon_weeks=1) returns NaN across a span outside its "
+               f"tolerance -- while {len(mislabelled)} round to exactly one week without "
+               "being one, and those are the ones a rounded week count gets wrong.")
+        )
     if len(off):
         st.dataframe(off.sort_values("report_date", ascending=False), hide_index=True)
     if sc["n_early"]:
@@ -634,16 +763,19 @@ def _cadence(sc: dict, scans: dict[str, dict]) -> None:
         )
     if len(mislabelled):
         st.caption(
-            f":warning: Not harmless: {len(mislabelled)} gap(s) of "
+            f":warning: The rounding trap: {len(mislabelled)} gap(s) of "
             f"{'/'.join(str(int(g)) for g in sorted(set(mislabelled['gap_days'])))} days, "
-            "at holiday weeks. round(4/7) is 1, so a four-day change would enter "
-            "lib.metrics.flow labelled as a one-week change, while CFTC's own published "
-            "change compares against the previous weekly print seven days back. "
-            "Invariant 3 excludes these spans for that reason."
+            "the spans this source actually contains out of the 4, 5, 9 and 10 that "
+            "round(days/7) calls one week. None of them is a week -- CFTC's own published "
+            "change compares against the previous weekly print seven days back -- so "
+            f"metrics.flow refuses them, being more than {metrics.SPAN_TOLERANCE_DAYS:g} "
+            "day off seven, and invariant 3 excludes them. metrics.weeks_between still "
+            "rounds and would label them one week, which is why that function is "
+            "documented for labelling a span and never for validating one."
             + (f" The {len(too_short)} gap(s) of "
                f"{'/'.join(str(int(g)) for g in sorted(set(too_short['gap_days'])))} days "
-               "are NOT in this count: they round to zero weeks, so flow already returns "
-               "NaN across them." if len(too_short) else "")
+               "are NOT in this count: they round to zero weeks, so both rules already "
+               "return NaN across them." if len(too_short) else "")
         )
     # Corroboration is a corpus-level fact, so it is summed over sources rather
     # than read off the selected one -- only legacy_fut has comparable pairs across
@@ -657,11 +789,15 @@ def _cadence(sc: dict, scans: dict[str, dict]) -> None:
             f"Invariant 3 measures the cost of that mislabelling independently, across "
             f"every source: of the {n} pairs it EXCLUDED because their span rounds to a "
             f"week without being one, {bad} ({100.0 * bad / n:.0f}%) disagree with the "
-            f"published change columns, against {tot_bad} of the {tot_n:,} it compared "
-            f"({100.0 * tot_bad / tot_n:.4f}%). Two unrelated checks landing on the same "
-            "rows is the strongest signal this board produces, and what it says is that "
-            "a four-day span must be dropped rather than relabelled -- which is why "
-            f"those {bad} rows appear nowhere in the failure counts above."
+            f"published change columns, against {tot_bad} of the {tot_n:,} it compared"
+            # A rate over zero comparisons is not a rate. A corpus with a short gap
+            # and no weekly one is contrived, but it costs one branch to not divide.
+            + (f" ({100.0 * tot_bad / tot_n:.4f}%)" if tot_n else "")
+            + ". Two unrelated checks landing on the same rows is the strongest signal "
+              "this board produces, and what it says is that a span of "
+            + "/".join(str(g) for g in sorted(_relabel_spans(scans)))
+            + " days must be dropped rather than relabelled -- which is why those "
+              f"{bad} rows appear nowhere in the failure counts above."
         )
 
 
@@ -690,31 +826,59 @@ def _render() -> None:
     res_hi = max((s["resid"]["hi"] for s in scans.values()
                   if not np.isnan(s["resid"]["hi"])), default=float("nan"))
 
+    # The denominator of each level counter, so a zero is never read against the
+    # wrong population: with a cohort dropped, market-weeks reconciled stays at
+    # 1,046,369 while the measured count falls, and the pair of numbers says so in
+    # the same glance that shows the zero.
+    # Counted separately rather than shared: the two identities need different
+    # columns of a market-week, so a null open interest on an otherwise complete
+    # week leaves the residual unmeasurable while the net sum is fine.
+    net_n = sum(s["net"]["n"] for s in scans.values())
+    res_n = sum(s["resid"]["n"] for s in scans.values())
     c = st.columns(5)
     c[0].metric("market-weeks reconciled", f"{sum(s['n_mw'] for s in scans.values()):,}")
     c[1].metric("not checkable (cohort row missing)", f"{n_incomplete:,}")
-    c[2].metric(f"|sum net| over {cftc_spec.NET_ZERO_TOL:g}", f"{net_fail:,}")
-    c[3].metric(f"|OI residual| over {cftc_spec.OI_RESIDUAL_TOL:g}", f"{oi_fail:,}")
+    c[2].metric(f"|sum net| over {cftc_spec.NET_ZERO_TOL:g}",
+                f"{net_fail:,} of {net_n:,}")
+    c[3].metric(f"|OI residual| over {cftc_spec.OI_RESIDUAL_TOL:g}",
+                f"{oi_fail:,} of {res_n:,}")
     c[4].metric(f"change fields off by over {cftc_spec.CHANGE_FIELD_TOL:g}",
                 f"{chg_bad:,} of {chg_n:,}")
     st.caption(
         "Every market-week of every ingested CFTC source, not the week on screen -- and "
         "the five counters are not the same kind of statement, so read them differently."
     )
-    st.caption(
-        f"**The two level counters are calibration, not a result.** The tolerances "
-        f"({cftc_spec.NET_ZERO_TOL:g} and {cftc_spec.OI_RESIDUAL_TOL:g} contracts) are "
-        "set one contract wider than the widest value this corpus contains"
-        + (f" -- measured here, the worst |sum of nets| is {worst_net:,.0f} and the "
-           f"residual spans {res_lo:,.0f}..{res_hi:,.0f} -- so nothing in the current "
-           "data can breach them by construction. A zero there says the tolerance is "
-           "calibrated, not that a test passed; they are forward-looking tripwires for "
-           "the next ingest."
-           if not np.isnan(worst_net) and not np.isnan(res_lo) else
-           ", so a zero there never was a test that passed. On this data it is not even "
-           "that: no market-week had a complete set of cohort rows, so neither identity "
-           "was evaluated and both zeros mean NOT TESTED. See the coverage counter.")
-    )
+    # The calibration claim is a claim about a corpus whose maximum is inside the
+    # tolerance. It is therefore gated on the counters being zero, not merely
+    # narrated beside them: forcing a break used to leave "nothing in the current
+    # data can breach them by construction" underneath two counters reading 46,361.
+    if net_fail or oi_fail:
+        st.caption(
+            f":warning: **The two level counters are findings here, not calibration.** "
+            f"The tolerances ({cftc_spec.NET_ZERO_TOL:g} and "
+            f"{cftc_spec.OI_RESIDUAL_TOL:g} contracts) were set one contract wider than "
+            "the widest value the corpus held when they were measured, so anything "
+            f"clearing them is new: {net_fail:,} market-week(s) over the net tolerance, "
+            f"{oi_fail:,} over the residual one, worst |sum of nets| "
+            f"{_num(worst_net)} and a residual spanning {_num(res_lo)}..{_num(res_hi)}. "
+            "Rounding does not do that. Treat the per-source failure tables below as the "
+            "finding and the rounding explanation as suspended until they are explained."
+        )
+    else:
+        st.caption(
+            f"**The two level counters are calibration, not a result.** The tolerances "
+            f"({cftc_spec.NET_ZERO_TOL:g} and {cftc_spec.OI_RESIDUAL_TOL:g} contracts) are "
+            "set one contract wider than the widest value this corpus contains"
+            + (f" -- measured here, the worst |sum of nets| is {worst_net:,.0f} and the "
+               f"residual spans {res_lo:,.0f}..{res_hi:,.0f} -- so nothing in the current "
+               "data can breach them by construction. A zero there says the tolerance is "
+               "calibrated, not that a test passed; they are forward-looking tripwires for "
+               "the next ingest."
+               if not np.isnan(worst_net) and not np.isnan(res_lo) else
+               ", so a zero there never was a test that passed. On this data it is not even "
+               "that: no market-week had a complete set of cohort rows, so neither identity "
+               "was evaluated and both zeros mean NOT TESTED. See the coverage counter.")
+        )
     if chg_bad:
         top = max(dates, key=lambda d: dates[d])
         change_txt = (
@@ -727,15 +891,25 @@ def _render() -> None:
                "published change compares a new classification against an "
                "old-classification prior level." if top.startswith("2008-07") else "")
         )
-    else:
+    elif chg_n:
         change_txt = (
             f"No comparison in any ingested source disagrees by more than "
             f"{cftc_spec.CHANGE_FIELD_TOL:g} contracts, over {chg_n:,} comparisons."
         )
+    else:
+        # Zero of zero. "No comparison disagrees" is true of an empty set and reads
+        # as a pass, so the sentence has to name the emptiness instead.
+        change_txt = (
+            "On this data it has nothing to count: no source holds a single pair of rows "
+            "spanning a week, so the identity was never evaluated and the zero beside it "
+            "means NOT TESTED rather than agreement."
+        )
     if rel_n:
+        spans = "/".join(str(g) for g in sorted(_relabel_spans(scans)))
         change_txt += (
             f" Separately, {rel_n} pairs whose span rounds to a week without being one "
-            "(4-day holiday gaps) are EXCLUDED from that count rather than added to it; "
+            f"are EXCLUDED from that count rather than added to it -- spans of {spans} "
+            "days here, out of the 4, 5, 9 and 10 that round(days/7) admits; "
             f"{rel_bad} of them disagree, which is a horizon-labelling artifact and not "
             "a reclassification. See Cadence."
         )
