@@ -9,3 +9,8 @@ venv/
 
 # data/ is deliberately NOT ignored -- committing it is the whole mechanism by
 # which snapshot-only sources ever acquire a history.
+
+# Boards that were built and then set aside. Kept on disk so they are cheap to
+# revive, out of the tree so the repo shows only what ships. They are still in
+# git history: `git show 42aa2dd:panels/_parked/screen.py` recovers any of them.
+.parked/

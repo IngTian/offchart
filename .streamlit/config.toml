@@ -1,0 +1,24 @@
+# Theme taken from ingtian.github.io's compiled CSS custom properties, dark mode
+# ([data-theme=dark]): --bg #08090b, --reading-grad start #14171b, --ink-1 #dce1dc,
+# --ochre #66c28c. See lib/theme.py, which holds the same values for the charts so
+# the page and the plots cannot drift apart.
+#
+# Setting the base theme here rather than only in CSS matters: Streamlit's own
+# widgets (selectbox menus, checkboxes, the expander chevron) are rendered by its
+# React layer and read these values. CSS alone leaves them light-on-light.
+
+[theme]
+base = "dark"
+backgroundColor = "#08090b"
+secondaryBackgroundColor = "#14171b"
+textColor = "#dce1dc"
+primaryColor = "#66c28c"
+font = "sans serif"
+
+[server]
+# The board reads committed parquet; it has no uploads and no secrets.
+maxUploadSize = 5
+headless = true
+
+[browser]
+gatherUsageStats = false
