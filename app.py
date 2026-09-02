@@ -1,5 +1,4 @@
-"""Watchboard -- alternative and government data that TradingView either does not
-carry or does not display usefully.
+"""Watchboard -- CFTC positioning, reproduced from the primary source.
 
     streamlit run app.py
 
@@ -7,284 +6,209 @@ Reads only from data/*.parquet. It never fetches, so it works offline and it is
 impossible for a chart to show a number that is not in the committed dataset.
 Ingest is a separate job (scripts/ingest.py, run by CI).
 
-Two display rules are enforced in code rather than left to discipline:
+This file is deliberately almost empty. Boards live in panels/ and sources in
+sources/, both discovered, so adding either touches no dispatch table here. The
+display rules are enforced in lib/charts.py and lib/metrics.py rather than
+restated per board.
 
-  1. NO DUAL AXES. Two series on one panel with two y-scales lets the author pick
-     the scaling that makes the correlation look how they want. Stacked subplots
-     with independent panels instead.
-  2. SIGNED QUANTITIES IN THEIR OWN UNITS. Net position is offered in contracts
-     and as a share of open interest, and its CHANGE is never offered as a
-     percent -- because -100,640 -> -96,727 is "+3,913 contracts, less short",
-     while "+3.89%" reads as growth.
+WHY THERE IS SO LITTLE CHROME
+
+Streamlit reruns the whole script on every widget interaction. A page with a row of
+controls therefore feels like a slide advancing, because that is structurally what
+it is. So everything that responds to the pointer runs in the BROWSER and never
+reaches the server: the zoom presets are plotly's, and the crosshair is this repo's
+own (see panels/positioning._smooth_crosshair -- plotly throttles its hover to
+about 17 updates a second, which is what "not smooth" turned out to mean). The
+board's few controls live in an st.fragment, so they rerun that function rather
+than this page. The sidebar appears only when there is more than one board.
 """
 from __future__ import annotations
 
-import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
-from plotly.subplots import make_subplots
 
-from lib import metrics, store
-from sources import REGISTRY, all_sources
-from sources.cftc_tff import COHORTS
+import panels
+from lib import cache, theme
+from lib.ui import caveat_block, freshness  # noqa: F401  -- re-exported for convenience
+from sources import IMPORT_ERRORS as SOURCE_IMPORT_ERRORS
+from sources import all_sources
 
-st.set_page_config(page_title="Watchboard", page_icon="◧", layout="wide")
-
-ACCENT = "#2E6F9E"
-MUTED = "#9AA5B1"
-WARN = "#B4623A"
-
-
-def caveat_block(source_id: str) -> None:
-    src = REGISTRY[source_id]
-    with st.expander("What these numbers can and cannot tell you", expanded=False):
-        st.caption(f"**Source.** {src.provenance}")
-        st.caption(f"**Cadence.** {src.cadence}")
-        if not src.backfillable:
-            st.caption(
-                ":warning: **Snapshot-only.** No history is retrievable. The series "
-                "begins when the job began; missed runs are permanent gaps."
-            )
-        for c in src.caveats:
-            st.caption(f"- {c}")
-
-
-def freshness(dates: pd.Series, label: str) -> None:
-    latest = pd.to_datetime(dates).max()
-    age = (pd.Timestamp.today().normalize() - latest.normalize()).days
-    msg = f"Latest {label}: **{latest.date()}** ({age} days ago)"
-    (st.warning if age > 10 else st.caption)(msg)
-
-
-# --------------------------------------------------------------------------- #
-# CFTC positioning
-# --------------------------------------------------------------------------- #
-def panel_cftc() -> None:
-    df = store.read("cftc_tff")
-    if df.empty:
-        st.info("No data yet. Run `python -m scripts.ingest --source cftc_tff`.")
-        return
-
-    df["report_date"] = pd.to_datetime(df["report_date"])
-    markets = sorted(df["market"].unique())
-
-    c1, c2, c3 = st.columns([2, 2, 1.4])
-    market = c1.selectbox("Market", markets, index=markets.index("NDX (E-mini, $20/pt)") if "NDX (E-mini, $20/pt)" in markets else 0)
-    labels = {k: v[1] for k, v in COHORTS.items()}
-    picked = c2.multiselect(
-        "Cohorts (summed, the way the circulating charts build them)",
-        options=list(labels),
-        default=["asset_mgr", "lev_money"],
-        format_func=lambda k: labels[k],
-    )
-    measure = c3.radio("Measure", ["net", "gross"], horizontal=True,
-                       help="net = which way they lean (can change sign). "
-                            "gross = how big the book is, i.e. how much there is "
-                            "to unwind. gross is a fragility measure.")
-
-    if not picked:
-        st.info("Pick at least one cohort.")
-        return
-
-    sub = df[(df["market"] == market) & (df["cohort"].isin(picked))]
-    oi = sub.groupby("report_date")["open_interest"].first()
-    agg = sub.groupby("report_date")[["long", "short"]].sum()
-
-    series = (metrics.net if measure == "net" else metrics.gross)(agg["long"], agg["short"])
-    series.name = measure
-    share = metrics.share_of(series, oi)
-    pctile = metrics.expanding_percentile(share)
-
-    unit = st.radio("Unit", ["% of open interest", "contracts"], horizontal=True)
-    plotted = share if unit.startswith("%") else series
-
-    fig = make_subplots(
-        rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.055,
-        row_heights=[0.42, 0.3, 0.28],
-        subplot_titles=(
-            f"{labels_join(picked, labels)} — {measure}, {unit}",
-            "Expanding percentile of that level (no look-ahead)",
-            "Open interest (contracts) — the column that says whether contracts were CREATED",
-        ),
-    )
-    fig.add_trace(go.Scatter(x=plotted.index, y=plotted, name=measure,
-                             line=dict(color=ACCENT, width=1.6)), row=1, col=1)
-    if measure == "net" and unit.startswith("%"):
-        fig.add_hline(y=0, line=dict(color=MUTED, width=1, dash="dot"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=pctile.index, y=pctile, name="percentile",
-                             line=dict(color=WARN, width=1.4)), row=2, col=1)
-    for level in (10, 90):
-        fig.add_hline(y=level, line=dict(color=MUTED, width=1, dash="dot"), row=2, col=1)
-    fig.add_trace(go.Scatter(x=oi.index, y=oi, name="open interest",
-                             line=dict(color=MUTED, width=1.3)), row=3, col=1)
-
-    fig.update_yaxes(title_text=unit, row=1, col=1)
-    fig.update_yaxes(title_text="percentile", range=[0, 100], row=2, col=1)
-    fig.update_yaxes(title_text="contracts", row=3, col=1)
-    fig.update_layout(height=760, hovermode="x unified", showlegend=False,
-                      margin=dict(l=70, r=30, t=60, b=40))
-    st.plotly_chart(fig, width="stretch")
-
-    freshness(sub["report_date"], "report (Tuesday positions, published Friday)")
-
-    # ---- current reading -------------------------------------------------- #
-    latest = plotted.index.max()
-    st.subheader(f"Reading for {latest.date()}")
-    prev2 = plotted.index[-3] if len(plotted) >= 3 else None
-    m1, m2, m3 = st.columns(3)
-    m1.metric(f"{measure} ({unit})", f"{plotted.loc[latest]:,.2f}")
-    m2.metric("expanding percentile", f"{pctile.loc[latest]:.1f}th",
-              help=f"ranked against {pctile.notna().sum():,} prior weekly reports")
-    if prev2 is not None:
-        delta = plotted.loc[latest] - plotted.loc[prev2]
-        m3.metric("2-week change",
-                  f"{delta:+,.2f} {'pp' if unit.startswith('%') else 'contracts'}",
-                  help="Stated as an absolute change on purpose: a percent change "
-                       "on a sign-changing quantity inverts its sense.")
-
-    # ---- every cohort, and the identity check ----------------------------- #
-    st.subheader(f"All cohorts on {latest.date()} — and the two invariants")
-    week = df[(df["market"] == market) & (df["report_date"] == latest)].copy()
-    week["net"] = week["long"] - week["short"]
-    week["gross"] = week["long"] + week["short"]
-    table = (week[["cohort_label", "long", "short", "spread", "net", "gross"]]
-             .rename(columns={"cohort_label": "cohort"})
-             .sort_values("net", ascending=False)
-             .reset_index(drop=True))
-    st.dataframe(table.style.format({c: "{:,.0f}" for c in
-                 ["long", "short", "spread", "net", "gross"]}, na_rep="—"),
-                 width="stretch", hide_index=True)
-
-    total_oi = float(week["open_interest"].iloc[0])
-    sum_net = float(week["net"].sum())
-    sum_long, sum_short = float(week["long"].sum()), float(week["short"].sum())
-    sum_spread = float(week["spread"].sum(skipna=True))
-    residual = total_oi - sum_long - sum_spread
-
-    i1, i2 = st.columns(2)
-    with i1:
-        st.markdown("**Invariant 1 — every net position sums to zero**")
-        st.code(f"sum(net) = {sum_net:,.0f}", language="text")
-        (st.success if abs(sum_net) < 1 else st.error)(
-            "Holds exactly. Every contract has two sides, so a market-wide net "
-            "of anything other than zero would mean a contract with one side."
-            if abs(sum_net) < 1 else f"BROKEN by {sum_net:,.0f} contracts — investigate before using this week."
-        )
-    with i2:
-        st.markdown("**Invariant 2 — longs, shorts and spreads reconcile to open interest**")
-        st.code(
-            f"sum(long)   = {sum_long:>12,.0f}\n"
-            f"sum(short)  = {sum_short:>12,.0f}\n"
-            f"sum(spread) = {sum_spread:>12,.0f}\n"
-            f"open int.   = {total_oi:>12,.0f}\n"
-            f"residual    = {residual:>12,.0f}   (unpublished non-reportable spread)",
-            language="text",
-        )
-        st.caption(
-            "Note it is **not** `sum(long) == open interest`. A spread position is "
-            "long one expiry and short another, so it sits in neither column and "
-            "gets its own. The net identity is unaffected because a spread adds "
-            "equally to both sides and cancels."
-        )
-
-    caveat_block("cftc_tff")
-
-
-def labels_join(picked: list[str], labels: dict[str, str]) -> str:
-    return " + ".join(labels[k] for k in picked)
-
-
-# --------------------------------------------------------------------------- #
-# Token prices
-# --------------------------------------------------------------------------- #
-def panel_token_prices() -> None:
-    df = store.read("openrouter_pricing")
-    if df.empty:
-        st.info("No data yet. Run `python -m scripts.ingest --source openrouter_pricing`.")
-        return
-
-    df["snapshot_date"] = pd.to_datetime(df["snapshot_date"])
-    n_snapshots = df["snapshot_date"].nunique()
-
-    if n_snapshots < 2:
-        st.warning(
-            f"**{n_snapshots} snapshot so far.** This endpoint serves only today's "
-            "prices — there is no backfill, so the time series starts now and "
-            "grows one run at a time. Today's cross-section is below; the trend "
-            "panel becomes meaningful after a few weeks of ingests."
-        )
-
-    latest = df["snapshot_date"].max()
-    today = df[df["snapshot_date"] == latest].copy()
-
-    st.subheader(f"Frontier price, {latest.date()} — cheapest model per vendor")
-    vendors = st.multiselect(
-        "Vendors", sorted(today["vendor"].dropna().unique()),
-        default=[v for v in ("anthropic", "openai", "google", "meta-llama", "deepseek")
-                 if v in set(today["vendor"])],
-    )
-    view = today[today["vendor"].isin(vendors)] if vendors else today
-    priced = view[view["usd_per_mtok_completion"].notna() & (view["usd_per_mtok_completion"] > 0)]
-
-    if priced.empty:
-        st.info("No priced models for that selection.")
-        return
-
-    cheapest = (priced.sort_values("usd_per_mtok_completion")
-                      .groupby("vendor", as_index=False).first())
-    fig = go.Figure(go.Bar(
-        x=cheapest["usd_per_mtok_completion"], y=cheapest["vendor"], orientation="h",
-        marker_color=ACCENT, text=cheapest["model_id"], textposition="outside",
-        hovertemplate="%{y}<br>%{text}<br>$%{x:.3f} / M output tokens<extra></extra>",
-    ))
-    fig.update_layout(height=60 + 42 * len(cheapest), xaxis_title="USD per million output tokens",
-                      margin=dict(l=110, r=180, t=20, b=45))
-    st.plotly_chart(fig, width="stretch")
-
-    if n_snapshots >= 2:
-        st.subheader("Price over time")
-        tracked = st.multiselect(
-            "Models", sorted(df["model_id"].dropna().unique()),
-            default=list(cheapest["model_id"].head(4)),
-        )
-        hist = df[df["model_id"].isin(tracked)]
-        fig2 = go.Figure()
-        for mid, grp in hist.groupby("model_id"):
-            grp = grp.sort_values("snapshot_date")
-            fig2.add_trace(go.Scatter(x=grp["snapshot_date"], y=grp["usd_per_mtok_completion"],
-                                      mode="lines+markers", name=str(mid)))
-        fig2.update_layout(height=420, yaxis_title="USD per million output tokens",
-                           hovermode="x unified", margin=dict(l=70, r=30, t=20, b=40))
-        st.plotly_chart(fig2, width="stretch")
-
-    st.info(
-        "**What this is half of.** Inference revenue = tokens × price per token. "
-        "This panel is the second factor only. If volume grows more slowly than "
-        "price falls, revenue shrinks while 'token consumption is booming' stays "
-        "literally true — so a falling line here is not by itself bearish or bullish."
-    )
-    freshness(df["snapshot_date"], "snapshot")
-    caveat_block("openrouter_pricing")
-
-
-# --------------------------------------------------------------------------- #
-PANELS = {
-    "CFTC positioning": panel_cftc,
-    "Token prices": panel_token_prices,
-}
-
-st.sidebar.title("◧ Watchboard")
-st.sidebar.caption(
-    "Alternative and government data that TradingView does not carry or does not "
-    "display usefully."
+st.set_page_config(
+    page_title="Watchboard", page_icon="◧", layout="centered",
+    initial_sidebar_state="collapsed",
 )
-choice = st.sidebar.radio("Board", list(PANELS))
-st.sidebar.divider()
-st.sidebar.caption("**Sources ingested**")
-for s in all_sources():
-    stored = store.read(s.id)
-    rows = f"{len(stored):,} rows" if not stored.empty else "empty"
-    st.sidebar.caption(f"`{s.id}` — {rows}" + ("" if s.backfillable else "  ·  snapshot-only"))
 
-st.title(choice)
-PANELS[choice]()
+BOARDS = panels.all_boards()
+T = theme.ACTIVE
+
+# Chrome off, type and spacing set once. Streamlit's defaults are what make a
+# board read as a slide: a toolbar, a footer, a 6rem top pad and a heading scale
+# built for demos. Everything below is either removing that or setting the
+# typographic scale the charts are drawn against.
+st.markdown(
+    f"""
+    <style>
+      #MainMenu, header[data-testid="stHeader"], footer, [data-testid="stToolbar"],
+      [data-testid="stDecoration"], [data-testid="stStatusWidget"] {{ display: none !important; }}
+
+      .stApp {{ background: {T['page']}; }}
+      .block-container {{ padding: 2.4rem 1.2rem 4rem; max-width: 1060px; }}
+
+      html, body, [class*="css"] {{
+        font-family: {theme.FONT_SANS};
+        -webkit-font-smoothing: antialiased;
+      }}
+
+      /* The source site pairs a serif display face with a system sans body and a
+         mono for small labels. Headings and the hero figure take the serif. */
+      .masthead {{ margin: 0 0 1.9rem; }}
+      .masthead .mark {{ font-family: {theme.FONT_MONO}; font-size: .78rem;
+        letter-spacing: .2em; text-transform: uppercase; color: {T['accent']}; }}
+      .masthead .sub {{ font-size: .95rem; color: {T['muted']}; margin-top: .5rem;
+        max-width: 78ch; line-height: 1.6; }}
+
+      .stamp {{ font-family: {theme.FONT_MONO}; font-size: .74rem; letter-spacing: .06em;
+        text-transform: uppercase; color: {T['faint']}; margin: 0 0 1.6rem;
+        padding-bottom: 1.1rem; border-bottom: 1px solid {T['hairline']}; }}
+      .stamp strong {{ color: {T['ink_2']}; font-weight: 600; }}
+
+      .card-head {{ margin: 1.4rem 0 .2rem; }}
+      .card-head h2 {{ font-family: {theme.FONT_DISPLAY}; font-size: 1.85rem;
+        font-weight: 400; color: {T['ink']}; margin: 0; letter-spacing: -.01em; }}
+      .card-sub {{ font-size: .84rem; color: {T['faint']}; margin-top: .35rem; }}
+
+      /* Hero figure in the display serif, proportional digits -- tabular-nums
+         makes a large standalone number look loose. */
+      .hero {{ display: flex; align-items: baseline; gap: 1rem; margin: 1rem 0 .1rem;
+        flex-wrap: wrap; }}
+      .hero-figure {{ font-family: {theme.FONT_DISPLAY}; font-size: 3.5rem; line-height: 1;
+        font-weight: 400; color: {T['accent']}; letter-spacing: -.02em; }}
+      .hero-unit {{ font-family: {theme.FONT_SANS}; font-size: 1rem; font-weight: 500;
+        color: {T['faint']}; margin-left: .4rem; letter-spacing: 0; }}
+      .hero-side {{ font-size: .98rem; color: {T['muted']}; }}
+      .hero-side strong {{ color: {T['ink']}; font-weight: 600; }}
+
+      .hero-row {{ display: flex; gap: 2rem; flex-wrap: wrap; margin: .5rem 0 .2rem;
+        align-items: baseline; }}
+      .hero-row .k {{ font-family: {theme.FONT_DISPLAY}; font-size: 1.5rem;
+        color: {T['ink']}; }}
+      .hero-row .k-unit {{ font-family: {theme.FONT_SANS}; font-size: .72rem;
+        color: {T['faint']}; }}
+      .hero-row .k-sm {{ font-size: .95rem; font-weight: 550; color: {T['ink_2']}; }}
+      .hero-row .v {{ font-size: .85rem; color: {T['faint']}; margin-left: .4rem; }}
+
+      /* Plotly on the chart plane, ringed with a hairline rather than shadowed. */
+      [data-testid="stPlotlyChart"] {{ background: {T['surface']}; border-radius: 12px;
+        border: 1px solid {T['hairline']}; padding: .45rem .3rem .2rem;
+        margin-top: .7rem; position: relative; }}
+      /* The modebar is trimmed to the PNG download; keep it quiet until hover. */
+      [data-testid="stPlotlyChart"] .modebar {{ opacity: 0; transition: opacity .18s; }}
+      [data-testid="stPlotlyChart"]:hover .modebar {{ opacity: 1; }}
+
+      /* Injected by the copy-image button; see panels/positioning._copy_button.
+         right: must clear the modebar, which holds two ~28px icons at the top
+         right. At 3.1rem this button sat ON TOP of the PNG download and silently
+         swallowed its clicks -- the download was unreachable and looked broken. */
+      .wb-copy {{ position: absolute; top: .5rem; right: 5.6rem; z-index: 5;
+        font-family: {theme.FONT_SANS}; font-size: .72rem; letter-spacing: .02em;
+        color: {T['faint']}; background: {T['chip']};
+        border: 1px solid {T['hairline']}; border-radius: 6px;
+        padding: .2rem .5rem; cursor: pointer; opacity: 0; transition: opacity .18s; }}
+      [data-testid="stPlotlyChart"]:hover .wb-copy {{ opacity: 1; }}
+      .wb-copy:hover {{ color: {T['accent']}; border-color: {T['baseline']}; }}
+
+      /* The frame-rate crosshair, injected by panels/positioning._smooth_crosshair.
+         No CSS transition on transform: the whole point is that it follows the
+         pointer every frame, and easing 16ms-apart updates would reintroduce
+         exactly the lag it was built to remove. Only opacity eases, on enter/exit. */
+      .wb-xhair {{ position: absolute; width: 1px; left: 0; top: 0;
+        background: {T['muted']}; pointer-events: none; z-index: 3;
+        opacity: 0; transition: opacity .12s ease-out; will-change: transform; }}
+      .wb-xtip {{ position: absolute; left: 0; top: 0; pointer-events: none; z-index: 4;
+        background: {T['chip']}; border: 1px solid {T['baseline']}; border-radius: 7px;
+        padding: .4rem .6rem; font-family: {theme.FONT_SANS}; font-size: .8rem;
+        line-height: 1.5; color: {T['ink']}; white-space: nowrap;
+        opacity: 0; transition: opacity .12s ease-out; will-change: transform;
+        box-shadow: 0 4px 16px rgba(0,0,0,.35); }}
+      .wb-xtip b {{ color: {T['accent']}; font-weight: 600; }}
+
+      [data-testid="stCaptionContainer"] p {{ font-size: .85rem; color: {T['faint']};
+        line-height: 1.6; }}
+      [data-testid="stExpander"] {{ border: none; }}
+      [data-testid="stExpander"] summary {{ font-size: .82rem; color: {T['faint']}; }}
+      [data-testid="stExpander"] summary:hover {{ color: {T['accent']}; }}
+      hr {{ border-color: {T['hairline']}; }}
+
+      /* Controls: quieter than Streamlit's defaults, which are sized for demos. */
+      [data-testid="stSelectbox"] label, [data-testid="stCheckbox"] label p {{
+        font-size: .82rem !important; color: {T['muted']}; }}
+      [data-testid="stCheckbox"] {{ margin-top: .1rem; }}
+      div[data-baseweb="select"] > div {{ background: {T['chip']};
+        border-color: {T['hairline']}; font-size: .85rem; }}
+      .stButton button {{ font-size: .8rem; padding: .3rem .8rem;
+        background: {T['chip']}; color: {T['ink_2']};
+        border: 1px solid {T['hairline']}; }}
+      .stButton button:hover {{ color: {T['accent']}; border-color: {T['accent']}; }}
+      iframe[title="st.iframe"] {{ display: none; }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+def _broken_module_warnings() -> None:
+    """A module that failed to import is shown, never silently dropped.
+
+    A board that vanishes looks like a design decision; one that says it is broken
+    gets fixed.
+    """
+    for label, errors in (("source", SOURCE_IMPORT_ERRORS), ("board", panels.IMPORT_ERRORS)):
+        for name, tb in errors.items():
+            st.error(f"The {label} module `{name}` failed to import, so it is missing here.")
+            with st.expander(f"traceback for {name}"):
+                st.code(tb, language="text")
+
+
+def _pick_board():
+    """The sidebar exists only to choose between boards, so with one board there
+    is nothing to choose and no sidebar."""
+    if len(BOARDS) <= 1:
+        return BOARDS[0] if BOARDS else None
+
+    groups: dict[str, list] = {}
+    for b in BOARDS:
+        groups.setdefault(b.group, []).append(b)
+    labels, lookup = [], {}
+    for group in sorted(groups, key=lambda g: min(b.order for b in groups[g])):
+        for b in groups[group]:
+            label = f"{group} · {b.title}" if len(groups) > 1 else b.title
+            labels.append(label)
+            lookup[label] = b
+    st.sidebar.title("◧ Watchboard")
+    return lookup[st.sidebar.radio("Board", labels, label_visibility="collapsed")]
+
+
+_broken_module_warnings()
+board = _pick_board()
+
+st.markdown(
+    '<div class="masthead"><div class="mark">◧ Watchboard</div>'
+    "<div class=\"sub\">CFTC Commitments of Traders, straight from the primary "
+    "source. A number you cannot reproduce yourself can raise a question; it "
+    "should not answer one.</div></div>",
+    unsafe_allow_html=True,
+)
+
+if board is None:
+    st.error("No boards were discovered in panels/. Nothing to show.")
+else:
+    missing = [
+        sid for sid in board.sources if (cache.file_stats(sid) or {}).get("rows", 0) == 0
+    ]
+    if missing:
+        st.info(
+            "Not ingested yet: " + ", ".join(f"`{m}`" for m in missing)
+            + ". Run `python -m scripts.ingest --backfill` (first run pulls full "
+            "history and takes a few minutes)."
+        )
+    else:
+        board.render()

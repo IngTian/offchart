@@ -1,4 +1,18 @@
-pandas>=2.2
-pyarrow>=16.0
-plotly>=5.22
-streamlit>=1.36
+# pyarrow is pinned tightly on purpose. Byte-level reproducibility of the parquet
+# files is a pyarrow property, not a pandas one, and lib/store.py relies on it to
+# skip a write when nothing changed -- which is what keeps no-op days out of git.
+# A pyarrow minor bump rewrites every file identically-in-content and produces one
+# ~115 MB no-op commit.
+# 25.* is the version that wrote the committed data/ files (visible in their
+# parquet metadata as "parquet-cpp-arrow version 25.0.1"). Changing it is a
+# deliberate act that costs one full-size no-op commit, not a routine bump.
+pandas>=3.0,<4
+pyarrow==25.*
+plotly>=5.22,<8
+streamlit>=1.36,<2
+
+# Tests are not optional here: they pin three corrections this repo has already
+# had to make once (the residual is rounding not an unpublished spread; sum(net)
+# is not exact; concentration divides by the side total), and they are the actual
+# enforcement mechanism for the no-dual-axis and causal-ranking rules.
+pytest>=8.0
