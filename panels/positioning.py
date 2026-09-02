@@ -235,6 +235,154 @@ def _copy_button(slug: str) -> None:
     )
 
 
+def _smooth_crosshair(slug: str, price_label: str = "") -> None:
+    """Replace plotly's crosshair with one driven at frame rate.
+
+    WHY THIS EXISTS, measured rather than assumed. plotly.js throttles hover to its
+    HOVERMINTIME constant: on a mouse sweep across the chart, 201 mousemove events
+    produced 31 hover updates, with the gap between them pinned at 57.6-60.0ms.
+    So the crosshair redraws about 17 times a second while the pointer moves at
+    60-120Hz, and roughly five sixths of the motion draws nothing. Rendering was
+    never the problem -- frame times through the same sweep were a flat 8.3ms with
+    zero long tasks. The stepping IS the throttle, and it is a module constant with
+    no config hook.
+
+    So: plotly's own hover is switched off and an overlay takes over, updated inside
+    requestAnimationFrame, which tracks the pointer every frame.
+
+    THE COST, stated because it is real. This reads two private plotly fields
+    (`_fullLayout` axis `_offset`/`_length` and `p2d`/`d2p`), so a plotly upgrade
+    could break it. It is therefore fully guarded: if anything it needs is missing
+    it returns WITHOUT touching hovermode, and plotly's throttled-but-working
+    crosshair stays. The failure mode is "back to 17Hz", never "no crosshair".
+    """
+    st.components.v1.html(
+        f"""
+        <script>
+        (function () {{
+          const doc = window.parent.document;
+          const W = window.parent;
+          let tries = 0;
+          const timer = setInterval(attach, 250);
+          attach();
+
+          function attach() {{
+            if (++tries > 80) {{ clearInterval(timer); return; }}
+            const gd = doc.querySelector('.js-plotly-plot');
+            if (!gd || !W.Plotly || !gd._fullLayout) return;
+            const card = gd.closest('[data-testid="stPlotlyChart"]');
+            if (!card) return;
+            if (card.querySelector('.wb-xhair')) {{ clearInterval(timer); return; }}
+
+            const fl = gd._fullLayout;
+            const xa = fl.xaxis;
+            // Bail out rather than half-work if the private shape is not what we
+            // expect. plotly's own crosshair is left switched on in that case.
+            // p2l / l2p, NOT p2d / d2p. On a date axis p2d returns a formatted
+            // STRING ("2018-07-20 12:00"), so a numeric nearest-point search against
+            // it compares number < string, gets NaN, and silently returns index 0 --
+            // the crosshair pinned itself to the first observation and never moved.
+            // p2l returns linear ms and l2p takes it back to pixels.
+            if (!xa || typeof xa.p2l !== 'function' || typeof xa.l2p !== 'function'
+                || xa._offset == null || xa._length == null) {{
+              clearInterval(timer); return;
+            }}
+            const yAxes = Object.keys(fl).filter(k => /^yaxis\\d*$/.test(k))
+                            .map(k => fl[k])
+                            .filter(a => a && a._offset != null && a._length != null);
+            if (!yAxes.length) {{ clearInterval(timer); return; }}
+            const top = Math.min(...yAxes.map(a => a._offset));
+            const bottom = Math.max(...yAxes.map(a => a._offset + a._length));
+
+            // The hover traces carry [price, net, open interest] per point. Take the
+            // first one; they all share the same customdata.
+            const src = (gd.data || []).find(t => t.customdata && t.customdata.length);
+            if (!src) {{ clearInterval(timer); return; }}
+            const xs = src.x.map(v => (v instanceof Date ? v.getTime() : +new Date(v)));
+            const cd = src.customdata;
+
+            const line = doc.createElement('div');
+            line.className = 'wb-xhair';
+            const tip = doc.createElement('div');
+            tip.className = 'wb-xtip';
+            card.appendChild(line);
+            card.appendChild(tip);
+
+            const fmt = (v, d) => (v == null || Number.isNaN(v)) ? '—'
+              : v.toLocaleString(undefined, {{minimumFractionDigits: d,
+                                              maximumFractionDigits: d}});
+            const when = ms => new Date(ms).toLocaleDateString(undefined,
+              {{year: 'numeric', month: 'short', day: 'numeric'}});
+
+            let px = null, raf = null, shown = false;
+
+            function nearest(xval) {{
+              let lo = 0, hi = xs.length - 1;
+              while (hi - lo > 1) {{
+                const mid = (lo + hi) >> 1;
+                if (xs[mid] < xval) lo = mid; else hi = mid;
+              }}
+              return (Math.abs(xs[lo] - xval) <= Math.abs(xs[hi] - xval)) ? lo : hi;
+            }}
+
+            function draw() {{
+              raf = null;
+              if (px == null) return;
+              const rel = px - xa._offset;
+              if (rel < 0 || rel > xa._length) {{ hide(); return; }}
+              const i = nearest(xa.p2l(rel));
+              const snap = xa.l2p(xs[i]) + xa._offset;   // sit on the observation
+              line.style.transform = 'translateX(' + snap + 'px)';
+              line.style.top = top + 'px';
+              line.style.height = (bottom - top) + 'px';
+
+              const row = cd[i] || [];
+              const parts = ['<b>' + when(xs[i]) + '</b>'];
+              if (row[0] != null) parts.push('{price_label or "price"}  ' + fmt(row[0], 2));
+              parts.push('net  ' + fmt(row[1], 2) + ' % of OI');
+              parts.push('open interest  ' + fmt(row[2], 0));
+              tip.innerHTML = parts.join('<br>');
+
+              // Flip the tooltip to the other side near the right edge so it never
+              // spills out of the card.
+              const w = tip.offsetWidth || 150;
+              const flip = snap + 14 + w > xa._offset + xa._length;
+              tip.style.transform = 'translateX(' + (flip ? snap - w - 14 : snap + 14) + 'px)';
+              tip.style.top = (top + 10) + 'px';
+              if (!shown) {{
+                shown = true;
+                line.style.opacity = '1';
+                tip.style.opacity = '1';
+              }}
+            }}
+
+            function hide() {{
+              shown = false;
+              line.style.opacity = '0';
+              tip.style.opacity = '0';
+            }}
+
+            // mousemove, not pointermove: plotly's own drag layers sit on top and
+            // swallow pointer events, so pointermove on the container fires once and
+            // then stops. mousemove still reaches it.
+            gd.addEventListener('mousemove', ev => {{
+              px = ev.clientX - gd.getBoundingClientRect().left;
+              if (!raf) raf = W.requestAnimationFrame(draw);
+            }}, {{passive: true, capture: true}});
+            gd.addEventListener('mouseleave', hide, {{passive: true}});
+
+            // Only now, with the overlay proven installed, silence plotly's own
+            // throttled crosshair so the two do not fight.
+            W.Plotly.relayout(gd, {{hovermode: false}});
+            clearInterval(timer);
+          }}
+        }})();
+        </script>
+        """,
+        height=0,
+    )
+
+
 def _pull_button() -> None:
     """Fetch the newest CFTC reports on demand.
 
@@ -406,6 +554,7 @@ def _panel() -> None:
         key=f"chart-{slug}",
     )
     _copy_button(slug)
+    _smooth_crosshair(slug, ref.label if ref else "")
 
     if ref:
         note = f"Price is **{ref.label}**, sampled as of each Tuesday report date."

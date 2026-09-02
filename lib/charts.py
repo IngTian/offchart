@@ -377,33 +377,52 @@ def spotlight(
         )
     )
 
-    # ONE TOOLTIP FOR EVERY PANEL. An invisible line on the middle axis, carrying
-    # price and open interest as customdata, so a single hover reports all three
-    # series at one date -- listed top-to-bottom in the same order as the panels.
+    # ONE TOOLTIP, AND IT MUST FIRE WHEREVER THE POINTER IS.
+    #
+    # plotly only raises a hover for the subplot the pointer is inside, so a single
+    # invisible trace on the middle axis meant hovering the PRICE panel -- the
+    # largest one, the one you look at first -- produced no crosshair and no tooltip
+    # at all. Measured: a mouse sweep across the price panel fired 0 hover events.
+    # You had to find the narrow middle strip to get a reading, which is most of
+    # what "not smooth" felt like.
+    #
+    # So there is one zero-width hover trace PER AXIS. Each carries the same
+    # customdata and the same template, so the box is identical wherever you are;
+    # each takes its own panel's y-values so the label anchors near the line you are
+    # actually looking at.
     px_at = (
         price.reindex(values.index).to_numpy()
         if has_price
         else [None] * len(values)
     )
+    net_at = values.to_numpy()
     oi_at = open_interest.reindex(values.index).to_numpy()
+
     rows_tpl = []
     if has_price:
         rows_tpl.append(f"{price_label or 'price'}  <b>%{{customdata[0]:,.2f}}</b>")
-    rows_tpl.append(f"net  <b>%{{y:,.2f}}</b> {unit}")
-    rows_tpl.append("open interest  <b>%{customdata[1]:,.0f}</b>")
-    fig.add_trace(
-        go.Scatter(
-            x=values.index,
-            y=values.to_numpy(),
-            mode="lines",
-            line=dict(width=0, color="rgba(0,0,0,0)"),
-            customdata=list(zip(px_at, oi_at)),
-            hovertemplate="<br>".join(rows_tpl) + "<extra></extra>",
-            name="",
-            yaxis="y",
-            showlegend=False,
+    rows_tpl.append(f"net  <b>%{{customdata[1]:,.2f}}</b> {unit}")
+    rows_tpl.append("open interest  <b>%{customdata[2]:,.0f}</b>")
+    tpl = "<br>".join(rows_tpl) + "<extra></extra>"
+    combined = list(zip(px_at, net_at, oi_at))
+
+    hover_axes = [("y", net_at), ("y2", oi_at)]
+    if has_price:
+        hover_axes.append(("y3", px_at))
+    for axis, yvals in hover_axes:
+        fig.add_trace(
+            go.Scatter(
+                x=values.index,
+                y=yvals,
+                mode="lines",
+                line=dict(width=0, color="rgba(0,0,0,0)"),
+                customdata=combined,
+                hovertemplate=tpl,
+                name="",
+                yaxis=axis,
+                showlegend=False,
+            )
         )
-    )
 
     # Reference levels, drawn against a specific y-axis rather than a subplot row.
     shapes = []
