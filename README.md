@@ -225,10 +225,19 @@ file, which dictionary-encoding the repeated market-week columns wins most of
 back (−20%, 143 MB → 115 MB). `Source.__post_init__` asserts the sort key leads
 with a date column, so this can't be silently undone.
 
-Writes are byte-deterministic within a pyarrow version, so a day with no new
-report produces an identical file and an empty diff — which is why this commits
-~52 times a year rather than 365, and why nothing timestamped is written into
-`data/`. That determinism is a **pyarrow** property, so pyarrow is pinned.
+Writes are byte-deterministic, so a day with no new report produces an identical
+file and an empty diff — which is why this commits ~52 times a year rather than
+365, and why nothing timestamped is written into `data/`. Verified rather than
+assumed: two consecutive `scripts.ingest` runs report `file unchanged` for all
+eight sources and leave all eight sha256 digests identical.
+
+The determinism is only *within* a fixed write path. Changing anything that
+affects the bytes — the pyarrow version, the sort key, `row_group_size`, the dtype
+or dictionary-encoding choices in `lib/store._tighten` — rewrites every file
+identically-in-content and costs one full-size no-op commit. That is a deliberate
+act, not a routine bump, which is why pyarrow is pinned to the version that wrote
+the committed files (`25.*`, visible in their parquet metadata as
+`parquet-cpp-arrow version 25.0.1`).
 
 Year-partitioning was considered and rejected: ~20×, but it needs ~170 files and
 only works if every partition's dictionary is built from that partition alone,
