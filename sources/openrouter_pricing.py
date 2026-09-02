@@ -36,6 +36,8 @@ import urllib.request
 
 import pandas as pd
 
+from lib.schema import TableSchema
+
 ENDPOINT = "https://openrouter.ai/api/v1/models"
 UA = {"User-Agent": "watchboard research (personal, low volume)"}
 
@@ -49,7 +51,10 @@ def _f(value) -> float | None:
         return None
 
 
-def fetch() -> pd.DataFrame:
+def fetch(since: str | None = None) -> pd.DataFrame:
+    # `since` is accepted and ignored: the endpoint has no history to narrow.
+    # Every run returns exactly today's cross-section.
+    del since
     with urllib.request.urlopen(urllib.request.Request(ENDPOINT, headers=UA), timeout=90) as r:
         payload = json.load(r)
 
@@ -82,8 +87,28 @@ SOURCE_KWARGS = dict(
     label="Token prices (OpenRouter)",
     fetch=fetch,
     key=("snapshot_date", "model_id"),
+    sort_key=("snapshot_date", "model_id"),
+    schema=TableSchema(
+        required=("snapshot_date", "model_id"),
+        numeric=(
+            "context_length",
+            "usd_per_token_prompt",
+            "usd_per_token_completion",
+            "usd_per_token_input_cache_read",
+            "usd_per_token_input_cache_write",
+            "usd_per_mtok_prompt",
+            "usd_per_mtok_completion",
+        ),
+        optional=("model_name", "vendor"),
+        # A snapshot source legitimately returns ~400 rows against a store that
+        # accumulates thousands, so the row-count guard must not apply. Ingest
+        # only passes stored_rows for full pulls of backfillable sources.
+        min_rows_vs_stored=0.0,
+    ),
+    group="Token economics",
     cadence="Live -- one snapshot per ingest run",
     backfillable=False,
+    incremental=False,
     provenance="openrouter.ai/api/v1/models, pricing.{prompt,completion} in USD/token",
     caveats=(
         "SNAPSHOT-ONLY: no history is available from the API. The series starts "
