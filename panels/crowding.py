@@ -201,7 +201,11 @@ def _concentration(wk: pd.DataFrame, breaks: tuple) -> None:
            "Net concentration: the same accounts after their own offsets", breaks, 0.9),
         _p(_oi_rows(wk), "contracts",
            "The denominator, so a share converts back to contracts", breaks, 0.9),
-        _p([(rank, "Top 8 long", "share", charts.ACCENT, None)], "percentile",
+        # Label must not collide with the raw "Top 8 long" series two panels up:
+        # stacked() draws ONE legend for the whole figure, so a reused label shows
+        # the same name twice meaning two different quantities (a share of the side
+        # total, and a rank of that share).
+        _p([(rank, "Top 8 long, trailing percentile", "share", charts.ACCENT, None)], "percentile",
            "Concentrated for THIS market? Top 8 long against its own last 3 years",
            breaks, 0.7, guides=(10.0, 90.0), y_range=(0.0, 100.0)),
     ])
