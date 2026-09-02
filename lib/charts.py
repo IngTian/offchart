@@ -36,7 +36,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from lib import metrics
+from lib import metrics, theme
 
 # Validated categorical palette, in slot order. Slots are assigned in this order
 # and never cycled -- a 9th series folds into "other" or becomes a small multiple.
@@ -51,15 +51,19 @@ SERIES_COLORS = (SERIES_1, SERIES_2, SERIES_3, SERIES_4, "#e87ba4", "#008300")
 POS = SERIES_1
 NEG = "#e34948"
 
-# Chrome and ink. Gridlines and axis rules are SOLID hairlines one shade off the
-# surface -- dashing them adds noise and reads as "threshold" when it is just a
-# grid. Dashes are reserved here for actual reference levels.
-SURFACE = "#fcfcfb"
-INK = "#0b0b0b"
-INK_SECONDARY = "#52514e"
-MUTED = "#898781"
-GRID = "#e1e0d9"
-BASELINE = "#c3c2b7"
+# Chrome and ink come from lib/theme, which reads them off ingtian.github.io.
+# Gridlines and axis rules are SOLID hairlines one shade off the surface --
+# dashing them adds noise and reads as "threshold" when it is just a grid. Dashes
+# are reserved here for actual reference levels.
+SURFACE = theme.c("surface")
+INK = theme.c("ink")
+INK_SECONDARY = theme.c("ink_2")
+MUTED = theme.c("muted")
+GRID = theme.c("grid")
+BASELINE = theme.c("baseline")
+ACCENT_LINE = theme.c("accent")
+ACCENT_FILL = theme.c("accent_soft")
+SEAL = theme.c("seal")
 
 # Kept for the parked boards, which were written against these names.
 ACCENT = SERIES_1
@@ -79,14 +83,42 @@ RANGE_BUTTONS = (
     dict(step="all", label="All"),
 )
 
-#: Passed to st.plotly_chart. No modebar, no scroll-hijack, responsive.
+#: Passed to st.plotly_chart. No scroll-hijack, no logo, responsive.
+#:
+#: The modebar is trimmed to the PNG download alone. Everything else it offers
+#: (lasso, box select, autoscale, the plotly logo) is either meaningless on a time
+#: series or duplicates the range buttons, and a full modebar is most of what makes
+#: an embedded plot look like a developer tool.
 PLOTLY_CONFIG = {
-    "displayModeBar": False,
+    "displayModeBar": True,
+    "displaylogo": False,
+    "modeBarButtonsToRemove": [
+        "zoom", "pan", "select", "lasso2d", "zoomIn", "zoomOut",
+        "autoScale", "resetScale", "toggleSpikelines",
+        "hoverClosestCartesian", "hoverCompareCartesian",
+    ],
     "scrollZoom": False,
     "doubleClick": "reset",
-    "displaylogo": False,
     "responsive": True,
+    "toImageButtonOptions": {
+        # scale 3 so the export is usable in a document rather than a screenshot of
+        # a screen. Plotly renders at this multiple rather than upscaling.
+        "format": "png",
+        "scale": 3,
+        "filename": "watchboard",
+    },
 }
+
+
+def png_config(filename: str, scale: int = 3) -> dict:
+    """PLOTLY_CONFIG with the download named after what is on screen.
+
+    Worth doing: a folder of `newplot.png`, `newplot(1).png` is unusable a week
+    later, and the filename is the only label an exported image carries.
+    """
+    cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in PLOTLY_CONFIG.items()}
+    cfg["toImageButtonOptions"].update(filename=filename, scale=scale)
+    return cfg
 
 
 @dataclass
@@ -274,9 +306,9 @@ def spotlight(
             x=values.index,
             y=values.to_numpy(),
             mode="lines",
-            line=dict(color=SERIES_1, width=2),
+            line=dict(color=ACCENT_LINE, width=2),
             fill="tozeroy",
-            fillcolor="rgba(42,120,214,0.10)",
+            fillcolor=ACCENT_FILL,
             connectgaps=False,  # a gap in the data must look like a gap
             hovertemplate="%{y:,.2f} " + unit + "<extra></extra>",
             name="",
@@ -305,7 +337,7 @@ def spotlight(
     for b in breaks:
         # A contract re-specification. Levels either side are not comparable, so
         # the break is drawn rather than left for a caption to mention.
-        fig.add_vline(x=b, line=dict(color=NEG, width=1, dash="dot"))
+        fig.add_vline(x=b, line=dict(color=SEAL, width=1, dash="dot"))
 
     fig.update_layout(
         height=height,
@@ -319,9 +351,14 @@ def spotlight(
         showlegend=False,
         hovermode="x unified",
         hoverlabel=dict(
-            bgcolor="white",
-            bordercolor=GRID,
+            bgcolor=theme.c("chip"),
+            bordercolor=theme.c("baseline"),
             font=dict(family=FONT, size=12.5, color=INK),
+        ),
+        modebar=dict(
+            bgcolor="rgba(0,0,0,0)",
+            color=theme.c("faint"),
+            activecolor=ACCENT_LINE,
         ),
         dragmode=False,
         transition=dict(duration=250, easing="cubic-in-out"),
@@ -366,9 +403,9 @@ def spotlight(
         col=1,
         rangeselector=dict(
             buttons=list(RANGE_BUTTONS),
-            bgcolor=SURFACE,
-            activecolor="#e8eef8",
-            bordercolor=GRID,
+            bgcolor=theme.c("chip"),
+            activecolor=ACCENT_FILL,
+            bordercolor=theme.c("baseline"),
             borderwidth=1,
             font=dict(family=FONT, size=11.5, color=INK_SECONDARY),
             x=0,

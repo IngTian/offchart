@@ -24,7 +24,7 @@ from __future__ import annotations
 import streamlit as st
 
 import panels
-from lib import cache
+from lib import cache, theme
 from lib.ui import caveat_block, freshness  # noqa: F401  -- re-exported for convenience
 from sources import IMPORT_ERRORS as SOURCE_IMPORT_ERRORS
 from sources import all_sources
@@ -35,64 +35,102 @@ st.set_page_config(
 )
 
 BOARDS = panels.all_boards()
+T = theme.ACTIVE
 
 # Chrome off, type and spacing set once. Streamlit's defaults are what make a
 # board read as a slide: a toolbar, a footer, a 6rem top pad and a heading scale
 # built for demos. Everything below is either removing that or setting the
 # typographic scale the charts are drawn against.
 st.markdown(
-    """
+    f"""
     <style>
       #MainMenu, header[data-testid="stHeader"], footer, [data-testid="stToolbar"],
-      [data-testid="stDecoration"], [data-testid="stStatusWidget"] { display: none !important; }
+      [data-testid="stDecoration"], [data-testid="stStatusWidget"] {{ display: none !important; }}
 
-      .stApp { background: #f9f9f7; }
-      .block-container { padding: 2.6rem 1.2rem 4rem; max-width: 1080px; }
+      .stApp {{ background: {T['page']}; }}
+      .block-container {{ padding: 2.4rem 1.2rem 4rem; max-width: 1060px; }}
 
-      html, body, [class*="css"] {
-        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      html, body, [class*="css"] {{
+        font-family: {theme.FONT_SANS};
         -webkit-font-smoothing: antialiased;
-      }
+      }}
 
-      .masthead { margin: 0 0 2.2rem; }
-      .masthead .mark { font-size: .95rem; letter-spacing: .14em; text-transform: uppercase;
-                        color: #898781; }
-      .masthead .sub  { font-size: .95rem; color: #52514e; margin-top: .35rem; }
+      /* The source site pairs a serif display face with a system sans body and a
+         mono for small labels. Headings and the hero figure take the serif. */
+      .masthead {{ margin: 0 0 1.9rem; }}
+      .masthead .mark {{ font-family: {theme.FONT_MONO}; font-size: .78rem;
+        letter-spacing: .2em; text-transform: uppercase; color: {T['accent']}; }}
+      .masthead .sub {{ font-size: .95rem; color: {T['muted']}; margin-top: .5rem;
+        max-width: 78ch; line-height: 1.6; }}
 
-      /* One card per chart: a hairline ring on the chart surface, not a shadow. */
-      .card-head { margin: 0 0 .2rem; }
-      .card-head h2 { font-size: 1.5rem; font-weight: 650; color: #0b0b0b;
-                      margin: 0; letter-spacing: -.01em; }
-      .card-sub { font-size: .88rem; color: #898781; margin-top: .25rem; }
-      .card-gap { height: 3.4rem; }
+      .stamp {{ font-family: {theme.FONT_MONO}; font-size: .74rem; letter-spacing: .06em;
+        text-transform: uppercase; color: {T['faint']}; margin: 0 0 1.6rem;
+        padding-bottom: 1.1rem; border-bottom: 1px solid {T['hairline']}; }}
+      .stamp strong {{ color: {T['ink_2']}; font-weight: 600; }}
 
-      /* Hero figure: proportional digits on purpose -- tabular-nums makes a large
-         standalone number look loose. */
-      .hero { display: flex; align-items: baseline; gap: .9rem; margin: 1.1rem 0 .1rem; }
-      .hero-figure { font-size: 3.4rem; line-height: 1; font-weight: 620;
-                     color: #0b0b0b; letter-spacing: -.025em; }
-      .hero-unit { font-size: 1.15rem; font-weight: 500; color: #898781;
-                   margin-left: .35rem; letter-spacing: 0; }
-      .hero-side { font-size: 1rem; color: #52514e; }
-      .hero-side strong { color: #0b0b0b; font-weight: 600; }
+      .card-head {{ margin: 1.4rem 0 .2rem; }}
+      .card-head h2 {{ font-family: {theme.FONT_DISPLAY}; font-size: 1.85rem;
+        font-weight: 400; color: {T['ink']}; margin: 0; letter-spacing: -.01em; }}
+      .card-sub {{ font-size: .84rem; color: {T['faint']}; margin-top: .35rem; }}
 
-      .hero-row { display: flex; gap: 2.2rem; flex-wrap: wrap;
-                  margin: .55rem 0 .2rem; align-items: baseline; }
-      .hero-row .k { font-size: 1.35rem; font-weight: 600; color: #0b0b0b; }
-      .hero-row .k-unit { font-size: .8rem; font-weight: 500; color: #898781; }
-      .hero-row .k-sm { font-size: 1rem; font-weight: 550; color: #52514e; }
-      .hero-row .v { font-size: .88rem; color: #898781; margin-left: .45rem; }
+      /* Hero figure in the display serif, proportional digits -- tabular-nums
+         makes a large standalone number look loose. */
+      .hero {{ display: flex; align-items: baseline; gap: 1rem; margin: 1rem 0 .1rem;
+        flex-wrap: wrap; }}
+      .hero-figure {{ font-family: {theme.FONT_DISPLAY}; font-size: 3.5rem; line-height: 1;
+        font-weight: 400; color: {T['accent']}; letter-spacing: -.02em; }}
+      .hero-unit {{ font-family: {theme.FONT_SANS}; font-size: 1rem; font-weight: 500;
+        color: {T['faint']}; margin-left: .4rem; letter-spacing: 0; }}
+      .hero-side {{ font-size: .98rem; color: {T['muted']}; }}
+      .hero-side strong {{ color: {T['ink']}; font-weight: 600; }}
 
-      /* Plotly sits on the chart surface, ringed rather than shadowed. */
-      [data-testid="stPlotlyChart"] { background: #fcfcfb; border-radius: 10px;
-        border: 1px solid rgba(11,11,11,.10); padding: .5rem .35rem .2rem; margin-top: .6rem; }
+      .hero-row {{ display: flex; gap: 2rem; flex-wrap: wrap; margin: .5rem 0 .2rem;
+        align-items: baseline; }}
+      .hero-row .k {{ font-family: {theme.FONT_DISPLAY}; font-size: 1.5rem;
+        color: {T['ink']}; }}
+      .hero-row .k-unit {{ font-family: {theme.FONT_SANS}; font-size: .72rem;
+        color: {T['faint']}; }}
+      .hero-row .k-sm {{ font-size: .95rem; font-weight: 550; color: {T['ink_2']}; }}
+      .hero-row .v {{ font-size: .85rem; color: {T['faint']}; margin-left: .4rem; }}
 
-      [data-testid="stCaptionContainer"] p { font-size: .88rem; color: #52514e;
-        line-height: 1.55; }
-      .streamlit-expanderHeader, [data-testid="stExpander"] summary {
-        font-size: .86rem; color: #52514e; }
-      [data-testid="stExpander"] { border: none; }
-      hr { border-color: #e1e0d9; }
+      /* Plotly on the chart plane, ringed with a hairline rather than shadowed. */
+      [data-testid="stPlotlyChart"] {{ background: {T['surface']}; border-radius: 12px;
+        border: 1px solid {T['hairline']}; padding: .45rem .3rem .2rem;
+        margin-top: .7rem; position: relative; }}
+      /* The modebar is trimmed to the PNG download; keep it quiet until hover. */
+      [data-testid="stPlotlyChart"] .modebar {{ opacity: 0; transition: opacity .18s; }}
+      [data-testid="stPlotlyChart"]:hover .modebar {{ opacity: 1; }}
+
+      /* Injected by the copy-image button; see panels/positioning._copy_button.
+         right: must clear the modebar, which holds two ~28px icons at the top
+         right. At 3.1rem this button sat ON TOP of the PNG download and silently
+         swallowed its clicks -- the download was unreachable and looked broken. */
+      .wb-copy {{ position: absolute; top: .5rem; right: 5.6rem; z-index: 5;
+        font-family: {theme.FONT_SANS}; font-size: .72rem; letter-spacing: .02em;
+        color: {T['faint']}; background: {T['chip']};
+        border: 1px solid {T['hairline']}; border-radius: 6px;
+        padding: .2rem .5rem; cursor: pointer; opacity: 0; transition: opacity .18s; }}
+      [data-testid="stPlotlyChart"]:hover .wb-copy {{ opacity: 1; }}
+      .wb-copy:hover {{ color: {T['accent']}; border-color: {T['baseline']}; }}
+
+      [data-testid="stCaptionContainer"] p {{ font-size: .85rem; color: {T['faint']};
+        line-height: 1.6; }}
+      [data-testid="stExpander"] {{ border: none; }}
+      [data-testid="stExpander"] summary {{ font-size: .82rem; color: {T['faint']}; }}
+      [data-testid="stExpander"] summary:hover {{ color: {T['accent']}; }}
+      hr {{ border-color: {T['hairline']}; }}
+
+      /* Controls: quieter than Streamlit's defaults, which are sized for demos. */
+      [data-testid="stSelectbox"] label, [data-testid="stCheckbox"] label p {{
+        font-size: .82rem !important; color: {T['muted']}; }}
+      [data-testid="stCheckbox"] {{ margin-top: .1rem; }}
+      div[data-baseweb="select"] > div {{ background: {T['chip']};
+        border-color: {T['hairline']}; font-size: .85rem; }}
+      .stButton button {{ font-size: .8rem; padding: .3rem .8rem;
+        background: {T['chip']}; color: {T['ink_2']};
+        border: 1px solid {T['hairline']}; }}
+      .stButton button:hover {{ color: {T['accent']}; border-color: {T['accent']}; }}
+      iframe[title="st.iframe"] {{ display: none; }}
     </style>
     """,
     unsafe_allow_html=True,

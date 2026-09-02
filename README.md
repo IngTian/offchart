@@ -38,19 +38,40 @@ universe between them — commodities and financials — and never overlap.
 "Commercial" is not "producer + swap dealer", so splicing legacy onto disagg at
 2006-06-13 produces a definitional break, not a longer series.
 
-Six CFTC boards, each answering one question (plus a seventh for token prices):
+**One board.** Pick a market, tick which cohorts to group — dealers, asset
+managers, hedge funds, other reportables, small traders — and read their combined
+net position as a share of that market's open interest, against its own history.
 
-- **Screen** — what's unusual this week, across every market at once. This is the
-  view the previous version of this repo lacked entirely: it could only show one
-  market at a time, which means you had to already know what to look at.
-- **Market** — one market in full, segmented so a percentile never spans a
-  contract re-specification.
-- **Flows** — who moved, and the zero-sum constraint that bounds it.
-- **Crowding** — concentration ratios, trader counts, spread share. Three families
-  of published columns the previous version ignored completely.
-- **Base rates** — whether an extreme reading actually precedes anything. Tested,
-  not asserted. See the honest scope limit below.
-- **Integrity** — the accounting identities, checked across all 4 million rows.
+Two readings reproduce the published figures to the digit, which is how you know
+the pipeline is right rather than merely plausible:
+
+| | reading | rank | 2-week |
+|---|---|---|---|
+| VIX · asset managers | −6.04% of OI | 4th pctile of 1,014 weeks | +1.05pp |
+| NASDAQ-100 · asset mgr + hedge funds | +9.28% of OI | 40th of 846 | +20.58pp |
+
+Export is the modebar's PNG at 3× (named after the selection, not `newplot.png`)
+or **Copy image** for the clipboard. **Pull latest data** runs the ingest job on
+demand — see the note under Architecture, because it is the one place this repo
+bends its own rule.
+
+Six further boards were built and then set aside as the wrong surface: a
+cross-market screen, a per-market drill-down, week-over-week flows, crowding
+(concentration and trader counts), forward base rates, and an integrity
+reconciliation over all 4 million rows. They live in `.parked/`, which is
+gitignored — untracked but still on disk, and still in git history at `42aa2dd`.
+
+## Theme
+
+Palette and type are read out of `ingtian.github.io`'s compiled CSS rather than
+approximated: `#08090b` page, `#14171b` chart plane, `#dce1dc` ink, `#66c28c`
+accent, Georgia for display, a system sans for body, mono for small labels. Both
+of that site's modes are in `lib/theme.py` and switching is one constant.
+
+Only dark is wired up, for a measured reason: the site's light accent `#c8a36a`
+sits at **1.95:1** on its own cream paper. That is fine for the large serif
+headings it was picked for and below the 3:1 a 2px data line needs. Light mode
+would need its own darker step for the series colour before it could ship.
 
 ## Architecture — why it's split in two
 
@@ -75,6 +96,18 @@ So they own different layers, and the split is better than either alone:
 The board **works offline** and cannot display a number that isn't in the
 committed dataset. History accrues whether the laptop is awake or not — which
 matters more than it looks, because one source has no backfill at all.
+
+### The one exception: the pull button
+
+The display layer is otherwise forbidden from fetching, so that a chart can never
+show a number that isn't on disk. **Pull latest data** bends that, deliberately and
+narrowly: it runs the *ingest job* — the same code path CI runs — which writes
+parquet and then clears the read cache. It does not fetch into a chart. What is on
+screen after it finishes is still exactly what is committed to disk.
+
+It is incremental, asking the API for roughly the last eight weeks (~1 MB) rather
+than the ~900 MB a full-history pull costs. Use `python -m scripts.ingest
+--backfill` for that.
 
 ### Adding a source is one file
 
