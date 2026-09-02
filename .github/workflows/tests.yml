@@ -1,0 +1,48 @@
+name: tests
+
+# Runs on every push, separately from ingest.
+#
+# The ingest workflow also runs the suite, but only on its own schedule and on
+# pushes that touch sources/, lib/ or scripts/ingest.py -- so a change to a panel
+# or to lib/charts.py would never have been tested before this file existed.
+#
+# The suite is ~2 seconds and needs no network and no data/: it reads the 596 KB
+# committed slice in tests/fixtures/. That matters here, because it means CI does
+# not have to ingest 115 MB before it can tell you a display rule broke.
+#
+# What it actually guards, all of which this repo has regressed on at least once:
+#   - the OI residual is rounding, not an unpublished non-reportable spread
+#   - sum(net) == 0 holds to a tolerance, and an exact test is the bug
+#   - concentration ratios divide by the side total, not by open interest
+#   - every ranking is causal, proved by truncation, with non-causal controls
+#     asserted to FAIL so the check cannot rot into a tautology
+#   - no board reaches past lib/charts.py to build a dual axis
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Tests
+        run: python -m pytest -q
+
+      # Cheap, and it is the check that catches the failure mode with no symptom:
+      # a CFTC column that still exists but now means something else. Allowed to
+      # fail the run without blocking the suite's verdict, since it is the only
+      # step here that depends on a third-party endpoint being up.
+      - name: Verify CFTC field maps against the live API
+        continue-on-error: true
+        run: python -m scripts.verify_spec --rows 1000

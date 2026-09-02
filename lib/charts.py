@@ -1,0 +1,646 @@
+"""Chart helpers that make the board's display rules the path of least resistance.
+
+Four rules, each of them the residue of a real error rather than a style
+preference. The point of this module is that following them should be less work
+than breaking them.
+
+RULE 1 -- NO DUAL AXES. Two series on one panel with two y-scales lets the author
+choose the scaling that makes a correlation look however they want, and the
+reader cannot see that a choice was made. So `stacked()` builds independent
+subplots sharing only the x-axis, and there is no parameter anywhere in this
+module that produces a secondary y-axis. tests/test_display_rules.py greps the
+panels for `secondary_y`, `make_subplots` and direct plotly imports, which is the
+actual enforcement -- a panel can always import plotly itself, so the test is the
+mechanism and this module is the convenience.
+
+RULE 2 -- CAUSAL RANKINGS ONLY. Enforced in lib/metrics, not here.
+
+RULE 3 -- SIGNED QUANTITIES KEEP THEIR OWN UNITS. `Series` carries a `kind`, and
+`pct_change()` refuses to format a percent change for a kind that can change
+sign. The gate is semantic: it asks what the quantity IS, not whether this
+particular sample happens to have crossed zero. An earlier empirical version
+returned "safe" for 14% of cohort-net series, including the board's own default
+market.
+
+RULE 4 -- OPEN INTEREST IS ALWAYS ON SCREEN NEXT TO POSITIONING. A cohort's share
+of open interest can rise because that cohort bought or because open interest
+shrank, and the share alone cannot distinguish them. `stacked()` therefore
+requires that any figure containing a share-of-open-interest series also contains
+an open-interest series, and raises if it does not.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+from lib import metrics, theme
+
+# Validated categorical palette, in slot order. Slots are assigned in this order
+# and never cycled -- a 9th series folds into "other" or becomes a small multiple.
+# Worst adjacent CVD delta-E is 9.1 on the light surface against a target of 8.
+SERIES_1 = "#2a78d6"  # blue
+SERIES_2 = "#eb6834"  # orange
+SERIES_3 = "#1baf7a"  # aqua
+SERIES_4 = "#eda100"  # yellow
+SERIES_COLORS = (SERIES_1, SERIES_2, SERIES_3, SERIES_4, "#e87ba4", "#008300")
+
+# Diverging poles for a signed quantity: warm/cool, so they read as opposite.
+POS = SERIES_1
+NEG = "#e34948"
+
+# Chrome and ink come from lib/theme, which reads them off ingtian.github.io.
+# Gridlines and axis rules are SOLID hairlines one shade off the surface --
+# dashing them adds noise and reads as "threshold" when it is just a grid. Dashes
+# are reserved here for actual reference levels.
+SURFACE = theme.c("surface")
+INK = theme.c("ink")
+INK_SECONDARY = theme.c("ink_2")
+MUTED = theme.c("muted")
+GRID = theme.c("grid")
+BASELINE = theme.c("baseline")
+ACCENT_LINE = theme.c("accent")
+ACCENT_FILL = theme.c("accent_soft")
+SEAL = theme.c("seal")
+
+# Kept for the parked boards, which were written against these names.
+ACCENT = SERIES_1
+WARN = SERIES_2
+POSITIVE = SERIES_3
+ZERO_LINE = BASELINE
+
+FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif'
+
+#: Client-side zoom presets. These are the smoothness win in a Streamlit app:
+#: plotly handles them in the browser, so the range changes instantly and the
+#: server never reruns the script. A widget doing the same job would round-trip.
+RANGE_BUTTONS = (
+    dict(count=1, label="1Y", step="year", stepmode="backward"),
+    dict(count=5, label="5Y", step="year", stepmode="backward"),
+    dict(count=10, label="10Y", step="year", stepmode="backward"),
+    dict(step="all", label="All"),
+)
+
+#: Passed to st.plotly_chart. No scroll-hijack, no logo, responsive.
+#:
+#: The modebar is trimmed to the PNG download alone. Everything else it offers
+#: (lasso, box select, autoscale, the plotly logo) is either meaningless on a time
+#: series or duplicates the range buttons, and a full modebar is most of what makes
+#: an embedded plot look like a developer tool.
+PLOTLY_CONFIG = {
+    "displayModeBar": True,
+    "displaylogo": False,
+    "modeBarButtonsToRemove": [
+        "zoom", "pan", "select", "lasso2d", "zoomIn", "zoomOut",
+        "autoScale", "resetScale", "toggleSpikelines",
+        "hoverClosestCartesian", "hoverCompareCartesian",
+    ],
+    "scrollZoom": False,
+    "doubleClick": "reset",
+    "responsive": True,
+    "toImageButtonOptions": {
+        # scale 3 so the export is usable in a document rather than a screenshot of
+        # a screen. Plotly renders at this multiple rather than upscaling.
+        "format": "png",
+        "scale": 3,
+        "filename": "watchboard",
+    },
+}
+
+
+def png_config(filename: str, scale: int = 3) -> dict:
+    """PLOTLY_CONFIG with the download named after what is on screen.
+
+    Worth doing: a folder of `newplot.png`, `newplot(1).png` is unusable a week
+    later, and the filename is the only label an exported image carries.
+    """
+    cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in PLOTLY_CONFIG.items()}
+    cfg["toImageButtonOptions"].update(filename=filename, scale=scale)
+    return cfg
+
+
+@dataclass
+class Series:
+    """One line on a panel, tagged with what kind of quantity it is."""
+
+    values: pd.Series
+    label: str
+    #: A key from lib.metrics.SIGNED_KINDS or UNSIGNED_KINDS. Drives the
+    #: percent-change gate and the zero line.
+    kind: str = "gross"
+    color: str | None = None
+    dash: str | None = None
+    fill: bool = False
+
+    @property
+    def signed(self) -> bool:
+        return not metrics.is_ratio_safe(self.kind)
+
+
+@dataclass
+class Panel:
+    """One subplot row."""
+
+    series: list[Series]
+    unit: str
+    title: str = ""
+    height: float = 1.0
+    #: Horizontal reference lines, e.g. (10, 90) for percentile bands.
+    guides: tuple[float, ...] = ()
+    y_range: tuple[float, float] | None = None
+    note: str = ""
+    #: Vertical dividers, used to mark segment boundaries.
+    breaks: tuple = field(default_factory=tuple)
+
+
+def _is_oi_share(p: Panel) -> bool:
+    return any(s.kind in ("net_share", "gross_share", "share") for s in p.series)
+
+
+def _is_oi(p: Panel) -> bool:
+    return any(s.kind == "open_interest" for s in p.series)
+
+
+def stacked(
+    panels: list[Panel],
+    *,
+    height_per_panel: int = 200,
+    require_open_interest: bool = True,
+    hovermode: str = "x unified",
+) -> go.Figure:
+    """Independent subplots sharing an x-axis. The only chart builder panels use.
+
+    Raises if a figure shows a share of open interest without showing open
+    interest itself (rule 4). Pass require_open_interest=False only for figures
+    that contain no share-of-OI series at all -- it is a declaration, not an
+    escape hatch, and the tests check that no panel passes it alongside a share.
+    """
+    panels = [p for p in panels if p.series]
+    if not panels:
+        raise ValueError("stacked() needs at least one panel with at least one series")
+
+    if require_open_interest and any(_is_oi_share(p) for p in panels):
+        if not any(_is_oi(p) for p in panels):
+            raise ValueError(
+                "display rule 4: this figure plots a share of open interest but no "
+                "open-interest series. A cohort's share can rise because the cohort "
+                "bought or because open interest fell, and the share alone cannot "
+                "tell you which. Add a Panel with a Series(kind='open_interest')."
+            )
+
+    total = sum(p.height for p in panels)
+    fig = make_subplots(
+        rows=len(panels),
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=min(0.06, 0.16 / max(len(panels), 1)),
+        row_heights=[p.height / total for p in panels],
+        subplot_titles=[p.title for p in panels],
+    )
+
+    ci = 0
+    for r, p in enumerate(panels, start=1):
+        for s in p.series:
+            color = s.color
+            if color is None:
+                color = SERIES_COLORS[ci % len(SERIES_COLORS)]
+                ci += 1
+            fig.add_trace(
+                go.Scatter(
+                    x=s.values.index,
+                    y=s.values.to_numpy(),
+                    name=s.label,
+                    mode="lines",
+                    line=dict(color=color, width=1.6, dash=s.dash),
+                    fill="tozeroy" if s.fill else None,
+                    connectgaps=False,  # a gap in the data must look like a gap
+                    hovertemplate=f"{s.label}: %{{y:,.2f}} {p.unit}<extra></extra>",
+                ),
+                row=r,
+                col=1,
+            )
+
+        if any(s.signed for s in p.series):
+            fig.add_hline(
+                y=0, line=dict(color=ZERO_LINE, width=1, dash="dot"), row=r, col=1
+            )
+        for g in p.guides:
+            fig.add_hline(
+                y=g, line=dict(color=MUTED, width=1, dash="dot"), row=r, col=1
+            )
+        for b in p.breaks:
+            fig.add_vline(
+                x=b, line=dict(color=WARN, width=1, dash="dot"), row=r, col=1
+            )
+
+        fig.update_yaxes(
+            title_text=p.unit,
+            row=r,
+            col=1,
+            range=list(p.y_range) if p.y_range else None,
+            gridcolor=GRID,
+            zeroline=False,
+        )
+        fig.update_xaxes(row=r, col=1, gridcolor=GRID)
+
+    fig.update_layout(
+        height=height_per_panel * len(panels) + 90,
+        hovermode=hovermode,
+        showlegend=any(len(p.series) > 1 for p in panels),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+        margin=dict(l=76, r=28, t=56, b=42),
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
+    for ann in fig.layout.annotations:
+        ann.font.size = 12.5
+    return fig
+
+
+def spotlight(
+    values: pd.Series,
+    open_interest: pd.Series,
+    *,
+    unit: str,
+    kind: str = "net_share",
+    guides: tuple[float, ...] = (),
+    breaks: tuple = (),
+    height: int = 460,
+    price: pd.Series | None = None,
+    price_label: str = "",
+    price_log: bool = False,
+) -> go.Figure:
+    """One market, one measure. The polished single-series figure.
+
+    Deliberately different from stacked(): that builder is for reading five things
+    at once and its subplot titles, legend row and dense axis furniture are what
+    made the board feel like a slide deck. This one is built to be GLANCED at.
+
+    ONE X-AXIS, SEVERAL Y-AXES -- AND THAT IS THE WHOLE TRICK
+
+    Built by hand rather than with make_subplots, because make_subplots gives each
+    stacked panel its OWN x-axis and links them with `matches`. Linked axes zoom
+    together but they are still separate hover targets: the crosshair is drawn only
+    inside the panel the pointer happens to be in, and the tooltip lists only that
+    panel's series. Reading positioning against price then means hovering twice and
+    holding the date in your head. (plotly's `hoversubplots` is meant to fix that;
+    it did not, on either hovermode, with either matches wiring.)
+
+    Here there is exactly ONE x-axis and three y-axes at different vertical
+    domains. All three traces live on that single axis, so "x unified" hover has
+    nothing to reconcile -- one date, one tooltip, every series in it -- and the
+    spike is a single line through the whole figure because there is only one
+    x-axis for it to cross.
+
+    Design decisions, each from the anti-pattern list rather than from taste:
+
+    - ONE SERIES PER PANEL, SO NO LEGEND. A legend box for a single line is ink
+      doing no work; the heading and the axis titles name the series instead.
+    - SOLID HAIRLINE GRID, HORIZONTAL ONLY. Dashed gridlines read as a threshold
+      when they are just a grid, and vertical grid on a dense time series is noise.
+      Dashes are kept for real reference levels.
+    - THE ZERO LINE IS THE BASELINE, not a gridline. For a net position, which side
+      of zero you are on is the first thing to read.
+    - A FILL TO ZERO at a tenth opacity, encoding distance-from-flat without adding
+      a mark, and working for both signs.
+    - PRICE ON TOP AND OPEN INTEREST AS A STRIP, never a twin axis. Price and
+      percent-of-open-interest are dimensionally unrelated, so a shared y-scale
+      would let the scaling choice manufacture whatever correlation the author
+      wanted. Separate panels show the same comparison and cannot overstate it.
+      Open interest is on screen because a share can move when the cohort trades or
+      when open interest does, and the share alone cannot say which (rule 4).
+    - CLIENT-SIDE RANGE BUTTONS, so zooming never touches the server.
+    """
+    has_price = price is not None and price.notna().any()
+
+    # Vertical domains, top to bottom, with gaps between them. Price takes the most
+    # room: it is what a reader orients by. Open interest needs only enough to show
+    # its shape and its steps.
+    if has_price:
+        dom_price = (0.58, 1.0)
+        dom_main = (0.20, 0.50)
+        dom_oi = (0.0, 0.12)
+    else:
+        dom_price = None
+        dom_main = (0.30, 1.0)
+        dom_oi = (0.0, 0.20)
+
+    signed = not metrics.is_ratio_safe(kind)
+    axis_font = dict(size=12, color=MUTED)
+    tick_font = dict(size=11.5, color=MUTED)
+    fig = go.Figure()
+
+    # The three drawn lines carry no hover of their own. plotly builds one unified
+    # label PER (x, y) subplot, so three traces on three y-axes give three separate
+    # tooltips no matter how the axes are wired -- you would read price in one box
+    # and positioning in another. Instead they are hover-silent and a single
+    # invisible trace below carries every value for the hovered date.
+    if has_price:
+        fig.add_trace(
+            go.Scatter(
+                x=price.index,
+                y=price.to_numpy(),
+                mode="lines",
+                line=dict(color=INK_SECONDARY, width=1.6),
+                connectgaps=False,
+                hoverinfo="skip",
+                name=price_label or "price",
+                yaxis="y3",
+            )
+        )
+
+    fig.add_trace(
+        go.Scatter(
+            x=values.index,
+            y=values.to_numpy(),
+            mode="lines",
+            line=dict(color=ACCENT_LINE, width=2),
+            fill="tozeroy",
+            fillcolor=ACCENT_FILL,
+            connectgaps=False,  # a gap in the data must look like a gap
+            hoverinfo="skip",
+            name=unit,
+            yaxis="y",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=open_interest.index,
+            y=open_interest.to_numpy(),
+            mode="lines",
+            line=dict(color=MUTED, width=1.2),
+            connectgaps=False,
+            hoverinfo="skip",
+            name="open interest",
+            yaxis="y2",
+        )
+    )
+
+    # ONE TOOLTIP, AND IT MUST FIRE WHEREVER THE POINTER IS.
+    #
+    # plotly only raises a hover for the subplot the pointer is inside, so a single
+    # invisible trace on the middle axis meant hovering the PRICE panel -- the
+    # largest one, the one you look at first -- produced no crosshair and no tooltip
+    # at all. Measured: a mouse sweep across the price panel fired 0 hover events.
+    # You had to find the narrow middle strip to get a reading, which is most of
+    # what "not smooth" felt like.
+    #
+    # So there is one zero-width hover trace PER AXIS. Each carries the same
+    # customdata and the same template, so the box is identical wherever you are;
+    # each takes its own panel's y-values so the label anchors near the line you are
+    # actually looking at.
+    px_at = (
+        price.reindex(values.index).to_numpy()
+        if has_price
+        else [None] * len(values)
+    )
+    net_at = values.to_numpy()
+    oi_at = open_interest.reindex(values.index).to_numpy()
+
+    rows_tpl = []
+    if has_price:
+        rows_tpl.append(f"{price_label or 'price'}  <b>%{{customdata[0]:,.2f}}</b>")
+    rows_tpl.append(f"net  <b>%{{customdata[1]:,.2f}}</b> {unit}")
+    rows_tpl.append("open interest  <b>%{customdata[2]:,.0f}</b>")
+    tpl = "<br>".join(rows_tpl) + "<extra></extra>"
+    combined = list(zip(px_at, net_at, oi_at))
+
+    hover_axes = [("y", net_at), ("y2", oi_at)]
+    if has_price:
+        hover_axes.append(("y3", px_at))
+    for axis, yvals in hover_axes:
+        fig.add_trace(
+            go.Scatter(
+                x=values.index,
+                y=yvals,
+                mode="lines",
+                line=dict(width=0, color="rgba(0,0,0,0)"),
+                customdata=combined,
+                hovertemplate=tpl,
+                name="",
+                yaxis=axis,
+                showlegend=False,
+            )
+        )
+
+    # Reference levels, drawn against a specific y-axis rather than a subplot row.
+    shapes = []
+    if signed:
+        shapes.append(
+            dict(type="line", xref="paper", x0=0, x1=1, yref="y", y0=0, y1=0,
+                 line=dict(color=BASELINE, width=1.2), layer="below")
+        )
+    for g in guides:
+        shapes.append(
+            dict(type="line", xref="paper", x0=0, x1=1, yref="y", y0=g, y1=g,
+                 line=dict(color=MUTED, width=1, dash="dot"), layer="below")
+        )
+    for b in breaks:
+        # A contract re-specification. Spanning the full paper height rather than
+        # one panel, because the break applies to every series at once.
+        shapes.append(
+            dict(type="line", xref="x", x0=b, x1=b, yref="paper", y0=0, y1=1,
+                 line=dict(color=SEAL, width=1, dash="dot"), layer="below")
+        )
+
+    log_ticks = dict(dtick=1, tickformat="~s", minor=dict(showgrid=False)) if price_log else {}
+
+    layout = dict(
+        height=height,
+        # Top margin carries the range buttons; the bottom must include the x-axis
+        # tick band or the year labels get cropped by the card edge -- sizing a
+        # container to the plot and forgetting the axis is its own anti-pattern.
+        margin=dict(l=64, r=24, t=48, b=52),
+        plot_bgcolor=SURFACE,
+        paper_bgcolor=SURFACE,
+        font=dict(family=FONT, size=12.5, color=INK_SECONDARY),
+        showlegend=False,
+        # One tooltip listing every series at the hovered date. With a single
+        # x-axis this needs no hoversubplots gymnastics -- the traces already share
+        # the axis that "unified" groups by.
+        hovermode="x unified",
+        # SNAP ALWAYS, NEVER BLINK. The defaults only show the spike and tooltip
+        # within ~20px of a point, so moving along a weekly series makes the
+        # crosshair strobe between observations. -1 means "always take the nearest
+        # point on the x-axis", so it tracks the pointer continuously.
+        spikedistance=-1,
+        hoverdistance=-1,
+        hoverlabel=dict(
+            bgcolor=theme.c("chip"),
+            bordercolor=theme.c("baseline"),
+            font=dict(family=FONT, size=12.5, color=INK),
+            align="left",
+        ),
+        modebar=dict(bgcolor="rgba(0,0,0,0)", color=theme.c("faint"),
+                     activecolor=ACCENT_LINE),
+        dragmode=False,
+        transition=dict(duration=250, easing="cubic-in-out"),
+        shapes=shapes,
+        xaxis=dict(
+            domain=(0.0, 1.0),
+            anchor="y2",           # sits under the bottom panel
+            showgrid=False,
+            showline=True,
+            linecolor=BASELINE,
+            linewidth=1,
+            ticks="",
+            tickfont=tick_font,
+            # The crosshair. One x-axis means one line through the whole figure.
+            showspikes=True,
+            spikemode="across",
+            spikethickness=1,
+            spikecolor=MUTED,
+            spikedash="solid",
+            rangeselector=dict(
+                buttons=list(RANGE_BUTTONS),
+                bgcolor=theme.c("chip"),
+                activecolor=ACCENT_FILL,
+                bordercolor=theme.c("baseline"),
+                borderwidth=1,
+                font=dict(family=FONT, size=11.5, color=INK_SECONDARY),
+                x=0, xanchor="left", y=1.0, yanchor="bottom",
+            ),
+        ),
+        yaxis=dict(
+            domain=dom_main,
+            anchor="x",
+            title=dict(text=unit, font=axis_font),
+            gridcolor=GRID,
+            zeroline=False,
+            showline=False,
+            ticks="",
+            tickfont=tick_font,
+        ),
+        yaxis2=dict(
+            domain=dom_oi,
+            anchor="x",
+            title=dict(text="open interest", font=axis_font),
+            gridcolor=GRID,
+            zeroline=False,
+            showline=False,
+            ticks="",
+            rangemode="tozero",
+            tickfont=tick_font,
+        ),
+    )
+    if has_price:
+        layout["yaxis3"] = dict(
+            domain=dom_price,
+            anchor="x",
+            title=dict(text=price_label or "price", font=axis_font),
+            gridcolor=GRID,
+            zeroline=False,
+            showline=False,
+            ticks="",
+            type="log" if price_log else "linear",
+            tickfont=tick_font,
+            **log_ticks,
+        )
+
+    fig.update_layout(**layout)
+    return fig
+
+
+def ranked_bars(
+    labels: list[str],
+    values: list[float],
+    *,
+    unit: str,
+    kind: str = "share",
+    hover: list[str] | None = None,
+    height_per_bar: int = 21,
+    center_on_zero: bool | None = None,
+) -> go.Figure:
+    """Horizontal ranked bars, for a cross-market screen.
+
+    Diverging colour when the quantity can change sign, because a signed bar
+    chart where positive and negative look the same is unreadable at a glance.
+    """
+    signed = not metrics.is_ratio_safe(kind)
+    if center_on_zero is None:
+        center_on_zero = signed
+    colors = [WARN if v < 0 else ACCENT for v in values] if signed else ACCENT
+
+    fig = go.Figure(
+        go.Bar(
+            x=values,
+            y=labels,
+            orientation="h",
+            marker_color=colors,
+            customdata=hover or [""] * len(labels),
+            hovertemplate="%{y}<br>%{x:,.2f} " + unit + "<br>%{customdata}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        height=max(240, height_per_bar * len(labels) + 96),
+        xaxis_title=unit,
+        margin=dict(l=8, r=24, t=16, b=44),
+        plot_bgcolor="rgba(0,0,0,0)",
+        bargap=0.24,
+    )
+    fig.update_xaxes(gridcolor=GRID, zeroline=center_on_zero, zerolinecolor=ZERO_LINE)
+    fig.update_yaxes(autorange="reversed", gridcolor="rgba(0,0,0,0)")
+    return fig
+
+
+#: Kinds measured in whole contracts. Everything else here is a rate or a ratio
+#: and needs decimals to be readable at all.
+_COUNT_KINDS = frozenset(
+    {"net", "gross", "flow", "change", "long", "short", "spread", "open_interest", "traders"}
+)
+
+
+def fmt_change(delta: float, kind: str, unit: str) -> str:
+    """Format a change, refusing a percent for a sign-changing quantity.
+
+    This is the formatting-time half of rule 3. `metrics.is_ratio_safe` raises on
+    an unknown kind, so a new quantity cannot slip through by being unclassified.
+
+    Resolution follows the QUANTITY, not the sign. Two earlier bugs, opposite
+    directions, both from tying decimals to signedness:
+
+      - a gross book change printed '-11,659.00 contracts' -- two decimals on an
+        integer count
+      - a net share change of +0.1555 percentage points printed '+0', because the
+        signed branch used zero decimals. 21% of one market's weekly share moves
+        are under 0.5pp, so they all rendered as a literal zero.
+
+    A NaN is stated rather than printed as 'nan': a missing comparison is a fact
+    about the data, and '+nan contracts' next to a real number reads as a bug.
+    """
+    safe = metrics.is_ratio_safe(kind)  # raises on an unknown kind -- fail closed
+    if delta is None or pd.isna(delta):
+        return "no comparable period"
+    body = f"{delta:+,.0f}" if kind in _COUNT_KINDS else f"{delta:+,.2f}"
+    if safe:
+        return f"{body} {unit}"
+    # Signed: absolute units only. "+3,913" on a short position means "less
+    # short", not "more" -- pair this with signed_direction() for the word.
+    return f"{body} {unit}"
+
+
+def signed_direction(previous: float, current: float) -> str:
+    """Plain-language description of a move in a sign-changing quantity.
+
+    Exists because the number alone is ambiguous: "+3,913" on a short position
+    means the cohort got LESS short, not more anything. Returns "" when either
+    end is missing, so a caller can omit the parenthetical rather than print an
+    assertion about a comparison it could not make.
+    """
+    if pd.isna(previous) or pd.isna(current):
+        return ""
+    if current == previous:
+        return "unchanged"
+    # Landing exactly on zero has no side, so a comparative is unreadable --
+    # "less flat" was the old output and it grades a closed position by
+    # magnitude against a side that no longer exists.
+    if current == 0:
+        return "closed to flat"
+    crossed = (previous < 0 < current) or (current < 0 < previous)
+    side = "long" if current > 0 else "short"
+    if crossed:
+        return f"flipped to net {side}"
+    if previous == 0:
+        return f"opened net {side}"
+    return f"{'more' if abs(current) > abs(previous) else 'less'} {side}"
