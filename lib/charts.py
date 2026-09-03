@@ -76,12 +76,25 @@ FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif'
 #: Client-side zoom presets. These are the smoothness win in a Streamlit app:
 #: plotly handles them in the browser, so the range changes instantly and the
 #: server never reruns the script. A widget doing the same job would round-trip.
-RANGE_BUTTONS = (
-    dict(count=1, label="1Y", step="year", stepmode="backward"),
-    dict(count=5, label="5Y", step="year", stepmode="backward"),
-    dict(count=10, label="10Y", step="year", stepmode="backward"),
-    dict(step="all", label="All"),
-)
+#:
+#: "All" IS A BACKWARD SPAN, NOT step="all", AND THAT IS LOAD-BEARING. step="all"
+#: relayouts xaxis.autorange=true, and autorange here is not tight: a one-point
+#: marker trace (the endpoint dot) has zero span, so plotly pads it by a fraction
+#: of the axis LENGTH IN PIXELS, which on sixteen years of weekly data resolved to
+#: 347 extra days -- measured, and measured again with the marker at size 0 to rule
+#: the marker size out. Every other button is stepmode="backward" and so measures
+#: from range[1]; with a padded range[1] "1Y" meant "a year ending eleven months
+#: in the future" and put three weeks of data against the left edge. Keeping every
+#: button on an explicit backward count means no button can reintroduce autorange,
+#: so the axis end stays on the last observation for all four.
+def range_buttons(span_days: int) -> list[dict]:
+    """The four presets, with "All" spelled as an exact backward span in days."""
+    return [
+        dict(count=1, label="1Y", step="year", stepmode="backward"),
+        dict(count=5, label="5Y", step="year", stepmode="backward"),
+        dict(count=10, label="10Y", step="year", stepmode="backward"),
+        dict(count=max(span_days, 1), label="All", step="day", stepmode="backward"),
+    ]
 
 #: Passed to st.plotly_chart. No scroll-hijack, no logo, responsive.
 #:
@@ -119,6 +132,102 @@ def png_config(filename: str, scale: int = 3) -> dict:
     cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in PLOTLY_CONFIG.items()}
     cfg["toImageButtonOptions"].update(filename=filename, scale=scale)
     return cfg
+
+
+def _ordinal(p: float | None) -> str:
+    """A percentile as an ordinal: 40.2 -> '40th', 1.4 -> '1st', NaN -> em dash.
+
+    Rounded with the SAME format string the hero text uses (`:.0f`), because the
+    bubble and the sentence above the chart print the same number and reading
+    "40th" beside "41st percentile" would look like two different statistics.
+    That inherits banker's rounding at exactly .5, which is a price worth paying
+    for the two agreeing.
+
+    An em dash for a missing rank rather than 'nan': a percentile is genuinely
+    blank during a series' warm-up (the first observation is the max of a
+    one-element set), and 'nanth' next to a real figure reads as a bug.
+    """
+    if p is None or pd.isna(p):
+        return "—"
+    v = float(p)
+    # FLOOR, not round-to-nearest, and 100 reserved for exactly 100.
+    #
+    # Rounding made two symmetric false claims. 99.75 printed "100th", which means
+    # "highest ever" -- and four real market/cohort series in the committed data hit
+    # that band without being a record. Below the other end, 0.14 printed "0th",
+    # which an expanding percentile can never be: the minimum attainable is 100/n,
+    # since every observation ranks at least against itself. Flooring costs nothing
+    # legible and cannot manufacture a record in either direction.
+    n = 100 if v >= 100.0 else max(1, int(v))
+    suffix = (
+        "th" if n % 100 in (11, 12, 13)
+        else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    )
+    return f"{n}{suffix}"
+
+
+def _align_pctile(pct: pd.Series | None, index: pd.Index) -> pd.Series | None:
+    """A caller's percentile series put onto the figure's own x grid.
+
+    Returns None for "nothing to draw", which covers both `pct is None` and an
+    all-NaN percentile (a market with one observation, where every rank is
+    warm-up). Callers can then test one thing instead of three.
+
+    Out-of-range values are dropped rather than drawn: `clamp_percentage` sends
+    anything outside [0, 100] to NaN, so a caller that hands over a z-score or a
+    0-1 fraction by mistake gets no bubble instead of a confident "0th".
+
+    The positional fallback exists because lib.metrics returns a couple of its
+    series on a RangeIndex (see how positioning.py handles `flow`), and silently
+    reindexing one of those onto dates yields all-NaN -- the bubble would just
+    not appear, which is the worst failure mode: invisible.
+    """
+    if pct is None:
+        return None
+    s = pd.to_numeric(pd.Series(pct), errors="coerce")
+    if not s.index.equals(index):
+        if len(s) == len(index) and not s.index.isin(index).any():
+            s = pd.Series(s.to_numpy(), index=index)  # positional, see docstring
+        else:
+            s = s.reindex(index)
+    # A 0-1 FRACTION IS THE LIKELY CALLER MISTAKE, and clamp_percentage cannot catch
+    # it: 0.402 sits comfortably inside [0, 100] and would render a confident "0th",
+    # which reads as record-low positioning. Refuse the series instead of drawing the
+    # most alarming possible label from a unit error. A genuine percentile series
+    # whose every value is under 1 would need every observation to be a near-record
+    # low, which is not a thing worth pinning a bubble to either.
+    finite = s.dropna()
+    if len(finite) > 1 and float(finite.max()) <= 1.0:
+        return None
+    s = metrics.clamp_percentage(s)
+    return s if s.notna().any() else None
+
+
+def _endpoint(values: pd.Series, pct: pd.Series) -> tuple | None:
+    """(x, y, percentile) at the LATEST observation, or None.
+
+    Anchored on the last non-NaN of `values` -- the last point the line actually
+    reaches -- and then abandoned if the rank there is missing. Drawing the
+    bubble at the last point that happens to have BOTH would silently slide it
+    back into the middle of the chart, where "this is where the series sits now"
+    stops being true and nothing on screen says so.
+
+    Positional throughout, not label lookups: `pct` has already been put on
+    `values`' own grid by _align_pctile, and a label lookup would additionally
+    have to cope with a duplicated report date, which returns a Series and makes
+    `pd.isna` raise.
+    """
+    v = pd.to_numeric(values, errors="coerce")
+    if len(v) != len(pct):
+        return None
+    live = v.notna().to_numpy().nonzero()[0]
+    if live.size == 0:
+        return None
+    i = int(live[-1])
+    p = pct.to_numpy(dtype=float)[i]
+    if pd.isna(p):
+        return None
+    return v.index[i], float(v.to_numpy(dtype=float)[i]), float(p)
 
 
 @dataclass
@@ -270,6 +379,8 @@ def spotlight(
     price: pd.Series | None = None,
     price_label: str = "",
     price_log: bool = False,
+    pctile: pd.Series | None = None,
+    oi_pctile: pd.Series | None = None,
 ) -> go.Figure:
     """One market, one measure. The polished single-series figure.
 
@@ -311,6 +422,37 @@ def spotlight(
       Open interest is on screen because a share can move when the cohort trades or
       when open interest does, and the share alone cannot say which (rule 4).
     - CLIENT-SIDE RANGE BUTTONS, so zooming never touches the server.
+
+    PERCENTILE BUBBLES, and why they are not a second scale
+
+    `pctile` and `oi_pctile` are optional CAUSAL percentiles (lib.metrics) of
+    `values` and `open_interest`. Each is drawn twice:
+
+      - as a filled dot on that panel's LAST observation with a small label
+        carrying the rank ("40th"), so the eye finishes the line and lands on
+        where that endpoint sits in its own history;
+      - as a row in the single tooltip, so the rank is readable at ANY date and
+        not only at the end.
+
+    Only the endpoint is labelled. A number on all 846 observations is a wall of
+    digits that no one reads and that hides the line it annotates.
+
+    RULE 1: the dot's y coordinate is the SERIES' OWN VALUE in the panel's own
+    units, read straight off the line, and the percentile travels as TEXT in the
+    label beside it. Nothing is mapped to a y position, so the panel still has
+    exactly one scale, and there is no scaling choice for an author to hide. The
+    alternative -- a 0-100 percentile axis on a panel measured in "% of open
+    interest" or in contracts -- is precisely the twin axis rule 1 forbids.
+
+    WHAT THE CALLER OWNS, since this function cannot check it: whether the rank is
+    causal (use lib.metrics; `.rank(pct=True)` is rule 2) and whether it is
+    computed within a segment. An expanding percentile of a raw open-interest
+    LEVEL across a contract re-specification is a real trap -- NASDAQ-100 open
+    interest steps 49,531 -> 255,954 on 2023-05-02 with no change in positioning,
+    so every post-break week ranks near the 100th against pre-break history and
+    the bubble would read "record high" for a units change. Segment it, or pass a
+    trailing percentile, or accept that the OI bubble is ranking the contract
+    definition as much as the crowd.
     """
     has_price = price is not None and price.notna().any()
 
@@ -398,13 +540,48 @@ def spotlight(
     net_at = values.to_numpy()
     oi_at = open_interest.reindex(values.index).to_numpy()
 
+    # Percentiles on the figure's own x grid. values.index IS that grid -- the
+    # hover traces and everything derived from them are indexed by it -- so both
+    # ranks are aligned to it once here, and the bubble below reads the same
+    # aligned series the tooltip does. A pill and a tooltip disagreeing about the
+    # same endpoint is the bug that alignment-per-consumer invites.
+    pct_at = _align_pctile(pctile, values.index)
+    oi_pct_at = _align_pctile(oi_pctile, values.index)
+
+    # The rank goes into customdata as an ALREADY-FORMATTED ordinal, not as a
+    # number with a `:.0f` in the template. Two reasons, both about NaN: plotly
+    # renders a null through a numeric format as an empty string and a NaN as
+    # "NaN", and neither is the em dash a blank warm-up rank should read as; and
+    # "40th" needs the suffix rule anyway, which a format string cannot express.
+    # Cost: ~850 short strings per hover trace instead of 850 floats.
+    pct_txt = [_ordinal(p) for p in (pct_at if pct_at is not None else [])]
+    oi_pct_txt = [_ordinal(p) for p in (oi_pct_at if oi_pct_at is not None else [])]
+    blank = [""] * len(values)
+
+    # A muted trailing chip, so the rank reads as a note on the row above it
+    # rather than as a fourth quantity. f-string, not .format(): the template is
+    # full of plotly's own %{...} braces and str.format cannot see the difference.
+    def _rank_chip(slot: int) -> str:
+        return f'  <span style="color:{MUTED}">%{{customdata[{slot}]}} pctile</span>'
+
     rows_tpl = []
     if has_price:
         rows_tpl.append(f"{price_label or 'price'}  <b>%{{customdata[0]:,.2f}}</b>")
-    rows_tpl.append(f"net  <b>%{{customdata[1]:,.2f}}</b> {unit}")
-    rows_tpl.append("open interest  <b>%{customdata[2]:,.0f}</b>")
+    net_row = f"net  <b>%{{customdata[1]:,.2f}}</b> {unit}"
+    oi_row = "open interest  <b>%{customdata[2]:,.0f}</b>"
+    if pct_at is not None:
+        net_row += _rank_chip(3)
+    if oi_pct_at is not None:
+        oi_row += _rank_chip(4)
+    rows_tpl += [net_row, oi_row]
     tpl = "<br>".join(rows_tpl) + "<extra></extra>"
-    combined = list(zip(px_at, net_at, oi_at))
+    # Slots 0-2 stay put: panels/positioning.py's frame-rate crosshair overlay
+    # reads (price, net, open interest) by position off the first trace that
+    # carries customdata, so the ranks are APPENDED rather than interleaved.
+    combined = list(zip(
+        px_at, net_at, oi_at,
+        pct_txt or blank, oi_pct_txt or blank,
+    ))
 
     hover_axes = [("y", net_at), ("y2", oi_at)]
     if has_price:
@@ -421,6 +598,80 @@ def spotlight(
                 name="",
                 yaxis=axis,
                 showlegend=False,
+            )
+        )
+
+    # THE PERCENTILE BUBBLE, ONE PER POSITIONING PANEL.
+    #
+    # NOT A SECOND SCALE (rule 1). The dot's y is the series' own last value, in
+    # the panel's own units; the rank is TEXT in the label next to it. No 0-100
+    # quantity is mapped to a y position anywhere, so each panel still has one
+    # scale and there is no second scaling for an author to choose.
+    #
+    # Colour is the LINE'S OWN colour in both cases -- accent for the share,
+    # near-gray for open interest -- so the bubble reads as belonging to the line
+    # it terminates rather than as a third series that appears only at the right
+    # edge. The dot gets a surface-coloured ring so it separates from the line
+    # underneath instead of dissolving into it.
+    #
+    # Cost of the label being an annotation rather than trace text: annotations
+    # are not clipped to the plot area, which is exactly what is wanted here (the
+    # pill lives in the right margin, beyond the last observation) and is also
+    # why the right margin below has to grow to make room for it.
+    #
+    # THE PILL IS ANCHORED TO PAPER x, NOT TO ITS DATE, AND THAT IS A BUG FIX.
+    # An annotation on a data axis expands that axis's autorange to contain the
+    # annotation's BOX, in pixels. A pill hung 9px past the final observation
+    # therefore pushed the x range end ~11.5 months past the last report -- the
+    # padding was right-side-only, which is what gave it away, since range[0] sat
+    # exactly on the first observation. That alone was survivable in the "All"
+    # view (a little trailing white space), but the range buttons are
+    # stepmode="backward" and measure from range[1], so "1Y" resolved to a window
+    # ending a year in the FUTURE and showed three weeks of data crushed against
+    # the left edge under a full-history y scale. Paper x=1 puts the pill in the
+    # same place on screen -- the right margin -- while touching no axis range.
+    # It stays truthful because dragmode is False and scrollZoom is off, so the
+    # only way to move x is the four range buttons and every one of them ends on
+    # the last observation; the right edge IS the last observation. y stays in
+    # data coordinates so the pill still sits at its own line's terminal height.
+    annotations = []
+    for axis, panel_values, panel_pct, colour in (
+        ("y", values, pct_at, ACCENT_LINE),
+        # Open interest on the shared grid, not its own index: this is the series
+        # the tooltip reports, so pinning the pill to it keeps the two identical.
+        ("y2", pd.Series(oi_at, index=values.index), oi_pct_at, MUTED),
+    ):
+        if panel_pct is None:
+            continue
+        end = _endpoint(panel_values, panel_pct)
+        if end is None:
+            continue  # no live endpoint, or its rank is warm-up: draw nothing
+        at, y, p = end
+        fig.add_trace(
+            go.Scatter(
+                x=[at],
+                y=[y],
+                mode="markers",
+                marker=dict(size=8, color=colour,
+                            line=dict(color=SURFACE, width=1.6)),
+                cliponaxis=False,  # the last point sits ON the right edge
+                hoverinfo="skip",  # one tooltip only; the rank is a row in it
+                name="",
+                yaxis=axis,
+                showlegend=False,
+            )
+        )
+        annotations.append(
+            dict(
+                xref="paper", yref=axis, x=1, y=y,
+                text=f"<b>{_ordinal(p)}</b>",
+                showarrow=False,
+                xanchor="left", xshift=9, yanchor="middle",
+                font=dict(family=FONT, size=11.5, color=colour),
+                bgcolor=theme.c("chip"),
+                bordercolor=theme.c("baseline"),
+                borderwidth=1,
+                borderpad=3,
             )
         )
 
@@ -444,14 +695,55 @@ def spotlight(
                  line=dict(color=SEAL, width=1, dash="dot"), layer="below")
         )
 
-    log_ticks = dict(dtick=1, tickformat="~s", minor=dict(showgrid=False)) if price_log else {}
+    # The plotted x extent, taken from every series rather than from `values`
+    # alone, so a price history that starts earlier or ends later is not cropped.
+    x_union = values.index.union(open_interest.index)
+    if has_price:
+        x_union = x_union.union(price.index)
+    x_first, x_last = x_union.min(), x_union.max()
+    x_span_days = max(int((x_last - x_first).days), 1)
+
+    # NO dtick ON THE LOG PRICE AXIS -- plotly picks, and that is deliberate,
+    # because this axis is rescaled per zoom by the browser (see
+    # panels/positioning._smooth_crosshair) and no fixed decade rule survives both
+    # ends of that. dtick=1 is one tick per DECADE: an index running 2.4k to 26k
+    # crosses one decade boundary, so the whole 42%-tall panel was labelled "10k"
+    # and nothing else. dtick="D2" is the 1-2-5 ladder, which fixes the full-history
+    # view (2k/5k/10k/20k) and then labels a zoomed 22.7k-31.4k window with NOTHING,
+    # since no rung falls inside it. Plotly's own log autotick adapts to the span,
+    # which is the only thing that can. tickformat "~s" keeps them as 2k/20k/30k.
+    log_ticks = dict(tickformat="~s", minor=dict(showgrid=False)) if price_log else {}
 
     layout = dict(
         height=height,
-        # Top margin carries the range buttons; the bottom must include the x-axis
-        # tick band or the year labels get cropped by the card edge -- sizing a
-        # container to the plot and forgetting the axis is its own anti-pattern.
-        margin=dict(l=64, r=24, t=48, b=52),
+        # MARGINS, AND THE ONE CLIPPING BUG THEY EXIST TO SURVIVE.
+        #
+        # Top carries the range buttons.
+        #
+        # Bottom is 66, up from 52. The x-axis tick band lives in it, and the card
+        # around this figure is not guaranteed to be as tall as the figure asks:
+        # Streamlit pins the chart card's height to the figure height with
+        # box-sizing:border-box, so a 1px border plus vertical padding leaves a
+        # content box ~9-12px SHORTER than the plot -- measured 758px of box for a
+        # 760px plot, which macOS Chrome renders as a scrollbar sawn across the
+        # bottom of the chart and, once that is suppressed, as the year labels
+        # being eaten by the card edge. The CSS in app.py is the real fix (zero
+        # border and zero padding, so the content box equals the figure height
+        # exactly -- NOT height:auto, which was tried and broke the layout worse);
+        # this margin is the belt to that braces, so a future off-by-one costs
+        # empty pixels instead of the axis.
+        #
+        # Right grows when a percentile pill is drawn, because the pill hangs
+        # PAST the last observation and the last observation can be flush with the
+        # plot's right edge (any range-button zoom that ends at today puts it
+        # there). Measured in the browser with the last point pinned to the edge:
+        # the widest pill occupies 9px of offset plus ~40px of box, so 24 would
+        # cut it in half and 52 still spilled 4px off the paper. 60 clears the
+        # five-character worst case ("100th") with a few px to spare. The cost is
+        # ~36px of plot width, ~3% of a full-width card, paid only by figures that
+        # actually carry a rank.
+        margin=dict(l=64, r=60 if annotations else 24, t=48, b=66),
+        annotations=annotations,
         plot_bgcolor=SURFACE,
         paper_bgcolor=SURFACE,
         font=dict(family=FONT, size=12.5, color=INK_SECONDARY),
@@ -492,8 +784,11 @@ def spotlight(
             spikethickness=1,
             spikecolor=MUTED,
             spikedash="solid",
+            # Explicit, so autorange's marker padding never applies. See
+            # range_buttons() for the 347-day measurement behind this.
+            range=[x_first, x_last],
             rangeselector=dict(
-                buttons=list(RANGE_BUTTONS),
+                buttons=range_buttons(x_span_days),
                 bgcolor=theme.c("chip"),
                 activecolor=ACCENT_FILL,
                 bordercolor=theme.c("baseline"),

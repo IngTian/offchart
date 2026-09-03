@@ -468,7 +468,11 @@ def net_flow_balances(flows_by_cohort: pd.DataFrame) -> pd.Series:
 
 
 def asof(
-    value_dates: pd.Series, values: pd.Series, at_dates: pd.Series
+    value_dates: pd.Series,
+    values: pd.Series,
+    at_dates: pd.Series,
+    *,
+    max_staleness_days: int | None = None,
 ) -> pd.Series:
     """Sample `values` as of each date in `at_dates`: the last one at or BEFORE it.
 
@@ -485,7 +489,18 @@ def asof(
     (a holiday Tuesday falling back to the previous Friday). A forward join leaks
     on 1 row per market -- small, and the wrong kind of small.
 
-    Returns a Series indexed by `at_dates`, NaN where no earlier value exists.
+    `max_staleness_days` caps how old the carried-forward value may be. Without it,
+    a backward join carries the last known value forward FOREVER, which turns a hole
+    in the source into a flat line that reads as "the price stopped moving" -- and a
+    flat line beside a series that moves every week invites exactly the wrong
+    inference. Measured on the real data before this cap existed: platinum (PL=F) had
+    54 report weeks staler than 30 days, and the fabricated plateau landed across the
+    2008 crash, the single largest move in that contract's history. A dead symbol is
+    the same failure at the live end -- the Bloomberg Commodity index stopped
+    updating on 2026-07-17 and drew a flat line that grew by a week every week.
+
+    Returns a Series indexed by `at_dates`, NaN where no earlier value exists or
+    where the nearest earlier one is staler than the cap.
     """
     left = pd.DataFrame({"_at": pd.to_datetime(pd.Series(at_dates)).to_numpy()})
     right = pd.DataFrame(
@@ -505,8 +520,12 @@ def asof(
         right_on="_on",
         direction="backward",  # never "nearest", never "forward" -- see above
     )
+    out = merged["_v"]
+    if max_staleness_days is not None:
+        age = (merged["_at"] - merged["_on"]).dt.days
+        out = out.where(age.notna() & (age <= max_staleness_days))
     return pd.Series(
-        merged["_v"].to_numpy(), index=pd.DatetimeIndex(merged["_at"]), name="asof"
+        out.to_numpy(), index=pd.DatetimeIndex(merged["_at"]), name="asof"
     )
 
 

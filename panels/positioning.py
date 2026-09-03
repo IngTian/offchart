@@ -34,11 +34,24 @@ import io
 import pandas as pd
 import streamlit as st
 
-from lib import cache, charts, metrics, pricemap, segments, theme
+from lib import cache, cftc_spec, charts, metrics, pricemap, segments, theme
 from lib.ui import caveat_block
 from panels import Board
 
-SOURCE = "cftc_tff_fut"
+#: The report families offered, in the order a person would reach for them. Each is
+#: a separate CFTC publication with its OWN cohort vocabulary, which is why the
+#: checkbox row is derived from the chosen family rather than hardcoded.
+#:
+#: Not offered: the futures-and-options-combined variants and the supplemental
+#: report. They are ingested and available, but combined-basis figures do not
+#: reconcile against futures-only ones, and putting them in the same picker invites
+#: comparing two numbers that are not comparable. Add them when there is a reason.
+FAMILIES = (
+    ("cftc_tff_fut", "Financial futures — equity indices, rates, FX, crypto"),
+    ("cftc_disagg_fut", "Commodities — energy, metals, grains, softs, livestock"),
+    ("cftc_legacy_fut", "Legacy, every market — the only history before 2006"),
+)
+DEFAULT_FAMILY = "cftc_tff_fut"
 PRICE_SOURCE = "prices"
 
 #: Series that have compounded enough over their history that a linear axis is
@@ -48,34 +61,57 @@ PRICE_SOURCE = "prices"
 _LOG_PRICE = frozenset({"^GSPC", "^NDX", "^DJI", "^RUT", "^SP400",
                         "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD"})
 
-#: cohort id -> the label a person uses. Order is the report's own order, dealers
-#: through to the small traders, so the checkbox row reads as a spectrum from the
-#: sell side to retail rather than alphabetically.
-COHORTS = (
-    ("dealer", "Dealers"),
-    ("asset_mgr", "Asset managers"),
-    ("lev_money", "Hedge funds"),
-    ("other_rept", "Other reportables"),
-    ("nonrept", "Small traders"),
-)
-
-DEFAULT_COHORTS = ("asset_mgr", "lev_money")
-
-#: Markets offered in the picker. CORE is the liquid, scannable set; the wider
-#: tiers are available because a specific question ("what are dealers doing in
-#: SOFR") should not require editing code.
-TIERS = ("CORE", "CORE + WIDE", "everything")
-
-_PRESETS = {
-    "VIX · asset managers": ("1170E1", ("asset_mgr",)),
-    "NASDAQ-100 · asset mgr + hedge funds": ("20974+", ("asset_mgr", "lev_money")),
+#: Short checkbox labels for the cohort ids that appear across the three families.
+#: The spec's own labels are accurate and too long for a checkbox row
+#: ("Producer / merchant / processor / user"), so these are the reading names; any
+#: id not listed falls back to the spec label, which means a new cohort shows up
+#: with its real name rather than vanishing.
+_COHORT_LABEL = {
+    # tff, sell side through to retail
+    "dealer": "Dealers",
+    "asset_mgr": "Asset managers",
+    "lev_money": "Hedge funds",
+    # disaggregated
+    "prod_merc": "Producers",
+    "swap": "Swap dealers",
+    "m_money": "Managed money",
+    # legacy
+    "noncomm": "Non-commercial",
+    "comm": "Commercial",
+    # shared
+    "other_rept": "Other reportables",
+    "nonrept": "Small traders",
 }
+
+#: Which cohorts start ticked, per family. In each case the speculative money: the
+#: cohorts whose position is a view rather than a hedge against physical or a
+#: market-making book.
+_DEFAULT_COHORTS = {
+    "cftc_tff_fut": ("asset_mgr", "lev_money"),
+    "cftc_disagg_fut": ("m_money",),
+    "cftc_legacy_fut": ("noncomm",),
+}
+
+#: Markets offered in the picker, narrowest first. See lib/universe for the rule.
+#:
+#: DEFAULT IS "everything", which is what a data terminal does: you type a ticker and
+#: it is either in the file or it is not. The tiers stay available because they are
+#: genuinely useful for browsing -- CORE is the couple-of-dozen markets worth
+#: scanning, and the liquidity rule behind it is what a cross-market screen needs --
+#: but making them the default meant a market being absent from the picker looked
+#: like a missing dataset rather than a filter.
+#:
+#: The cost is a long list: 140 markets in financials, 652 in commodities, 945 in
+#: legacy, most of them near-dead electricity and basis contracts. The selectbox is
+#: searchable, so the cost lands on browsing rather than on looking something up.
+TIERS = ("CORE", "CORE + WIDE", "everything")
+DEFAULT_TIER = "everything"
 
 
 @st.cache_data(show_spinner=False, max_entries=64)
-def _market_frame(code: str) -> pd.DataFrame:
+def _market_frame(source: str, code: str) -> pd.DataFrame:
     """Every cohort row for one market, indexed by report date. Cached per market."""
-    df = cache.read(SOURCE)
+    df = cache.read(source)
     sub = df[df["market_code"].astype(str) == code].copy()
     if sub.empty:
         return sub
@@ -103,6 +139,31 @@ def _measure(sub: pd.DataFrame, cohorts: tuple[str, ...]) -> pd.DataFrame:
     return out
 
 
+def _oi_pctile(out: pd.DataFrame, units: pd.Series) -> pd.Series:
+    """Causal rank of open interest, WITHIN its contract-unit segment.
+
+    The share's rank can span a contract re-specification safely, because
+    net/open-interest is dimensionless and a re-denomination cancels top and bottom.
+    Open interest in CONTRACTS is not: when CFTC re-based the Consolidated equity
+    indices on 2023-05-02, NASDAQ-100 open interest stepped 49,531 -> 255,954 with no
+    change in positioning, so an expanding rank over the whole history says "98th
+    percentile" about a number that is mostly a units change. That reading was on
+    screen one pixel-column to the right of the break line proving it.
+
+    So this one is segmented and the share's is not -- an asymmetry that looks
+    inconsistent until you notice one measure is a ratio and the other is a level.
+    Ranking restarts at each break, which means it is honestly blank-ish early in a
+    new segment rather than confidently wrong.
+    """
+    dates = pd.Series(out.index)
+    seg = segments.segment_ids(dates, units.reindex(out.index))
+    oi = out["open_interest"]
+    ranked = pd.Series(float("nan"), index=out.index)
+    for _, idx in oi.groupby(seg.to_numpy()).groups.items():
+        ranked.loc[idx] = metrics.expanding_percentile(oi.loc[idx]).to_numpy()
+    return ranked
+
+
 @st.cache_data(show_spinner=False, max_entries=32)
 def _price_at(symbol: str, dates: tuple) -> pd.Series:
     """The mapped price series, sampled AS OF each CFTC report date.
@@ -124,15 +185,13 @@ def _price_at(symbol: str, dates: tuple) -> pd.Series:
     if one.empty:
         return pd.Series(dtype=float)
 
-    return metrics.asof(one["date"], one["close"], pd.Series(list(dates)))
-
-
-def _breaks(sub: pd.DataFrame) -> tuple:
-    """Contract re-specification dates, so the open-interest step is explained."""
-    week = sub.groupby("report_date")["contract_units"].first()
-    ids = segments.segment_ids(pd.Series(week.index), week)
-    starts = pd.Series(week.index)[ids.ne(ids.shift()) & ids.gt(0)]
-    return tuple(starts)
+    # 10 days: a weekly report should always have a close within about a week, so
+    # anything older means the price series has a hole or has died. Beyond the cap
+    # the panel gets NaN and simply draws a gap, which is honest, instead of a
+    # carried-forward flat line that reads as a price standing still.
+    return metrics.asof(
+        one["date"], one["close"], pd.Series(list(dates)), max_staleness_days=10
+    )
 
 
 def _hero(frame: pd.DataFrame, who: str) -> None:
@@ -250,6 +309,13 @@ def _smooth_crosshair(slug: str, price_label: str = "") -> None:
     So: plotly's own hover is switched off and an overlay takes over, updated inside
     requestAnimationFrame, which tracks the pointer every frame.
 
+    It also carries the second thing that has to happen in the browser: RESCALING
+    THE Y AXES WHEN THE X RANGE CHANGES. plotly does that for a zoom box and not
+    for a range button, and every control on this board changes x only. Both jobs
+    live in one injected script because both need the same graph div, the same
+    readiness polling and the same private-field guards; splitting them would mean
+    a second hidden iframe doing the same three things.
+
     THE COST, stated because it is real. This reads two private plotly fields
     (`_fullLayout` axis `_offset`/`_length` and `p2d`/`d2p`), so a plotly upgrade
     could break it. It is therefore fully guarded: if anything it needs is missing
@@ -287,12 +353,28 @@ def _smooth_crosshair(slug: str, price_label: str = "") -> None:
                 || xa._offset == null || xa._length == null) {{
               clearInterval(timer); return;
             }}
-            const yAxes = Object.keys(fl).filter(k => /^yaxis\\d*$/.test(k))
-                            .map(k => fl[k])
-                            .filter(a => a && a._offset != null && a._length != null);
-            if (!yAxes.length) {{ clearInterval(timer); return; }}
-            const top = Math.min(...yAxes.map(a => a._offset));
-            const bottom = Math.max(...yAxes.map(a => a._offset + a._length));
+            // The KEY NAMES are fixed for the life of the figure; the offsets behind
+            // them are not, so only the names are captured. Measuring the band once
+            // at attach was wrong: expanding the chart to full screen re-lays the
+            // figure out taller, and a crosshair sized to the 760px version stopped
+            // two thirds of the way down the enlarged one -- a line that ends in
+            // mid-air over the panel it is supposed to be reading.
+            const yKeys = Object.keys(fl).filter(k => /^yaxis\\d*$/.test(k));
+            if (!yKeys.length) {{ clearInterval(timer); return; }}
+
+            function band() {{
+              const fl2 = gd._fullLayout;
+              if (!fl2) return null;
+              let t = Infinity, b = -Infinity;
+              for (const k of yKeys) {{
+                const a = fl2[k];
+                if (!a || a._offset == null || a._length == null) continue;
+                if (a._offset < t) t = a._offset;
+                if (a._offset + a._length > b) b = a._offset + a._length;
+              }}
+              return (isFinite(t) && isFinite(b)) ? {{t: t, b: b}} : null;
+            }}
+            if (!band()) {{ clearInterval(timer); return; }}
 
             // The hover traces carry [price, net, open interest] per point. Take the
             // first one; they all share the same customdata.
@@ -328,13 +410,30 @@ def _smooth_crosshair(slug: str, price_label: str = "") -> None:
             function draw() {{
               raf = null;
               if (px == null) return;
-              const rel = px - xa._offset;
-              if (rel < 0 || rel > xa._length) {{ hide(); return; }}
-              const i = nearest(xa.p2l(rel));
-              const snap = xa.l2p(xs[i]) + xa._offset;   // sit on the observation
+              // Re-read the axis every frame rather than closing over the one
+              // captured at attach time. A range button relayouts the figure and
+              // plotly may hand back a REBUILT _fullLayout, so a captured axis
+              // still answers p2l with the OLD range: the tooltip then reported a
+              // date from the previous window (a zoom to 2025-2026 read "Oct 5,
+              // 2010" under a pointer that had not moved). A property read per
+              // frame is free next to the rAF itself.
+              const ax = gd._fullLayout && gd._fullLayout.xaxis;
+              if (!ax || typeof ax.p2l !== 'function') {{ hide(); return; }}
+              const rel = px - ax._offset;
+              if (rel < 0 || rel > ax._length) {{ hide(); return; }}
+              const i = nearest(ax.p2l(rel));
+              const snap = ax.l2p(xs[i]) + ax._offset;   // sit on the observation
+              // The nearest observation to the pointer can lie OUTSIDE a zoomed
+              // window (pointer at the left edge, last point of the prior year
+              // just off it). Snapping to it would park the line off the panel.
+              if (snap < ax._offset - 1 || snap > ax._offset + ax._length + 1) {{
+                hide(); return;
+              }}
+              const bd = band();
+              if (!bd) {{ hide(); return; }}
               line.style.transform = 'translateX(' + snap + 'px)';
-              line.style.top = top + 'px';
-              line.style.height = (bottom - top) + 'px';
+              line.style.top = bd.t + 'px';
+              line.style.height = (bd.b - bd.t) + 'px';
 
               const row = cd[i] || [];
               const parts = ['<b>' + when(xs[i]) + '</b>'];
@@ -346,9 +445,9 @@ def _smooth_crosshair(slug: str, price_label: str = "") -> None:
               // Flip the tooltip to the other side near the right edge so it never
               // spills out of the card.
               const w = tip.offsetWidth || 150;
-              const flip = snap + 14 + w > xa._offset + xa._length;
+              const flip = snap + 14 + w > ax._offset + ax._length;
               tip.style.transform = 'translateX(' + (flip ? snap - w - 14 : snap + 14) + 'px)';
-              tip.style.top = (top + 10) + 'px';
+              tip.style.top = (bd.t + 10) + 'px';
               if (!shown) {{
                 shown = true;
                 line.style.opacity = '1';
@@ -371,9 +470,138 @@ def _smooth_crosshair(slug: str, price_label: str = "") -> None:
             }}, {{passive: true, capture: true}});
             gd.addEventListener('mouseleave', hide, {{passive: true}});
 
-            // Only now, with the overlay proven installed, silence plotly's own
-            // throttled crosshair so the two do not fight.
-            W.Plotly.relayout(gd, {{hovermode: false}});
+            // ---- Y FOLLOWS X ----------------------------------------------------
+            // plotly rescales y on a ZOOM BOX but never when only the x range
+            // changes, and every control here changes only x. So "1Y" left the
+            // price panel showing one year of an index against sixteen years of
+            // scale: a flat ribbon pinned to the top of the panel with the whole
+            // middle empty. Nothing is wrong with the data in that picture, which
+            // is what makes it worth fixing -- it reads as a broken chart.
+            //
+            // Each axis is rescaled by what it DECLARES, not by which panel it is,
+            // so this keeps working if the panels are reordered or one is dropped:
+            //   rangemode 'tozero'  -> floor stays exactly 0 (open interest)
+            //   a trace filled to zero -> zero stays inside the range, because the
+            //     baseline is the first thing read on a net position
+            //   type 'log'          -> the range is in log10 units
+            // READ gd._fullData, NOT gd.data. plotly.py ships numeric columns to
+            // the browser as a BINARY typed-array spec -- gd.data[i].y is
+            // {{dtype, bdata, _inputArray}}, an object with no numeric indices. The
+            // first version of this loop iterated gd.data, read nothing, found no
+            // finite values and quietly changed no range at all: a rescale that
+            // silently does not happen. _fullData holds the decoded Float64Array.
+            const xsCache = new Map();
+            function msOf(i, t) {{
+              if (!xsCache.has(i)) {{
+                xsCache.set(i, Array.prototype.map.call(t.x || [],
+                  v => (v instanceof Date ? v.getTime() : +new Date(v))));
+              }}
+              return xsCache.get(i);
+            }}
+
+            // EACH AXIS'S INTENT IS CAPTURED ONCE, HERE, BEFORE ANYTHING RELAYOUTS.
+            // rangemode is only coerced onto _fullLayout while an axis is
+            // AUTORANGING. The moment the rescale below writes an explicit range,
+            // rangemode disappears from the live layout -- so re-reading it per
+            // call made open interest lose its zero floor on the second zoom (a
+            // strip that had read 0-436k came back as 232k-417k, turning a level
+            // series into a magnified wiggle). Read at attach time it is still
+            // there.
+            const rules = {{}};
+            Object.keys(fl).filter(k => /^yaxis\\d*$/.test(k)).forEach(k => {{
+              rules[k] = {{toZero: fl[k].rangemode === 'tozero',
+                          log: fl[k].type === 'log'}};
+            }});
+
+            function yUpdate() {{
+              const fl2 = gd._fullLayout;
+              const ax = fl2 && fl2.xaxis;
+              const traces = gd._fullData;
+              if (!ax || !ax.range || typeof ax.r2l !== 'function') return null;
+              if (!traces || !traces.length) return null;
+              const x0 = ax.r2l(ax.range[0]), x1 = ax.r2l(ax.range[1]);
+              const seen = {{}};
+              traces.forEach((t, i) => {{
+                const name = t.yaxis || 'y';
+                const g = seen[name] ||
+                  (seen[name] = {{lo: Infinity, hi: -Infinity, zero: false}});
+                if (t.fill === 'tozeroy') g.zero = true;
+                const xs2 = msOf(i, t), ys = t.y || [];
+                const n = Math.min(xs2.length, ys.length);
+                for (let k = 0; k < n; k++) {{
+                  if (xs2[k] < x0 || xs2[k] > x1) continue;
+                  const v = ys[k];
+                  if (v == null || !isFinite(v)) continue;
+                  if (v < g.lo) g.lo = v;
+                  if (v > g.hi) g.hi = v;
+                }}
+              }});
+              const upd = {{}};
+              Object.keys(seen).forEach(name => {{
+                const g = seen[name];
+                if (!isFinite(g.lo) || !isFinite(g.hi)) return;
+                const key = 'yaxis' + name.slice(1);   // 'y'->'yaxis', 'y2'->'yaxis2'
+                const rule = rules[key];
+                if (!rule) return;
+                const toZero = rule.toZero;
+                let lo = g.lo, hi = g.hi;
+                if (toZero || g.zero) {{ lo = Math.min(0, lo); hi = Math.max(0, hi); }}
+                if (rule.log) {{
+                  if (lo <= 0 || hi <= 0) return;   // a log axis cannot show these
+                  const l0 = Math.log10(lo), l1 = Math.log10(hi);
+                  const p = Math.max((l1 - l0) * 0.08, 0.01);
+                  upd[key + '.range'] = [l0 - p, l1 + p];
+                  // Ticks have to follow the span, because no fixed rule labels
+                  // both ends of this zoom. "D2" is the 1-2-5 ladder: clean over
+                  // sixteen years (2k/5k/10k/20k) and EMPTY over one, where the
+                  // window 22.7k-31.4k contains no rung. null hands it back to
+                  // plotly's adaptive log ticks, which label a narrow window
+                  // evenly (23k...31k) but crowd a wide one (2k,3k,4k...9k,20k).
+                  // One decade is the crossover.
+                  // tickmode MUST be set alongside dtick. Supplying dtick at all
+                  // flips tickmode to 'linear', and it does not flip back when
+                  // dtick goes to null -- the axis then kept a one-tick-per-decade
+                  // rule and a 22.7k-31.4k window came back with NO labels at all.
+                  const wide = (l1 - l0) >= 1;
+                  upd[key + '.tickmode'] = wide ? 'linear' : 'auto';
+                  upd[key + '.dtick'] = wide ? 'D2' : null;
+                }} else {{
+                  const p = (Math.abs(hi - lo) || Math.abs(hi) || 1) * 0.08;
+                  upd[key + '.range'] = [toZero ? lo : lo - p, hi + p];
+                }}
+              }});
+              return Object.keys(upd).length ? upd : null;
+            }}
+
+            let selfUpdate = false;
+            if (typeof gd.on === 'function') {{
+              gd.on('plotly_relayout', ev => {{
+                // Guard the recursion: the relayout below fires this same event.
+                if (selfUpdate) return;
+                if (!Object.keys(ev || {{}}).some(k => k.indexOf('xaxis') === 0)) return;
+                // The pointer has not moved, so nothing would redraw the overlay,
+                // and what it is showing describes the window that just went away.
+                hide();
+                const upd = yUpdate();
+                if (!upd) return;
+                selfUpdate = true;
+                Promise.resolve(W.Plotly.relayout(gd, upd))
+                  .catch(() => {{}})
+                  .then(() => {{ selfUpdate = false; }});
+              }});
+            }}
+
+            // Normalise the FIRST paint through the same rule the buttons use, so
+            // that the view on load and the view after clicking "All" are the same
+            // picture rather than two nearly-identical ones -- and so the log tick
+            // rule above has one home instead of being restated server-side.
+            // Folded into the relayout that silences plotly's own throttled
+            // crosshair (safe now that the overlay is proven installed) because
+            // one relayout is cheaper than two and neither carries an xaxis key,
+            // so the handler above ignores both.
+            const first = yUpdate() || {{}};
+            first.hovermode = false;
+            W.Plotly.relayout(gd, first);
             clearInterval(timer);
           }}
         }})();
@@ -383,8 +611,8 @@ def _smooth_crosshair(slug: str, price_label: str = "") -> None:
     )
 
 
-def _pull_button() -> None:
-    """Fetch the newest CFTC reports on demand.
+def _pull_button(source: str) -> None:
+    """Fetch the newest reports for the SELECTED family, plus prices, on demand.
 
     NOTE THIS BREAKS A RULE THIS REPO OTHERWISE KEEPS. The display layer is
     supposed never to fetch, so that a chart cannot show a number that is not in
@@ -409,7 +637,7 @@ def _pull_button() -> None:
         # Positioning and prices, in that order: a failed price pull must not stop
         # the CFTC data from landing, since the board works without a price panel
         # and does not work without positions.
-        for sid in (SOURCE, PRICE_SOURCE):
+        for sid in (source, PRICE_SOURCE):
             try:
                 with contextlib.redirect_stdout(log):
                     report = ingest_job.run_one(get_source(sid), backfill=False)
@@ -440,25 +668,30 @@ def _pull_button() -> None:
 @st.fragment
 def _panel() -> None:
     """Controls plus chart. A fragment, so a checkbox does not rerun the page."""
-    summary = cache.market_summary(SOURCE)
-    if summary.empty:
-        st.info(f"`{SOURCE}` has no data yet. Use the pull button, or run the ingest job.")
-        return
-
-    top = st.columns([2.1, 1.15, 1.15])
+    top = st.columns([2.6, 1.05, 1.05])
     with top[0]:
-        preset = st.segmented_control(
-            "Preset", ["—", *_PRESETS], default="—", label_visibility="collapsed"
+        source = st.selectbox(
+            "Report",
+            [sid for sid, _ in FAMILIES],
+            format_func=lambda s: dict(FAMILIES)[s],
+            key="wb_family",
+            label_visibility="collapsed",
         )
     with top[1]:
-        tier = st.selectbox("Universe", TIERS, index=0, label_visibility="collapsed")
+        tier = st.selectbox("Universe", TIERS, index=TIERS.index(DEFAULT_TIER),
+                            key="wb_tier", label_visibility="collapsed")
     with top[2]:
-        _pull_button()
+        _pull_button(source)
 
     # Survives the rerun the pull triggers; cleared once shown so it does not
     # linger as a stale claim about data that has since changed.
     if note := st.session_state.pop("wb_pull", None):
         st.caption(note)
+
+    summary = cache.market_summary(source)
+    if summary.empty:
+        st.info(f"`{source}` has no data yet. Use the pull button, or run the ingest job.")
+        return
 
     keep = {"CORE": ("CORE",), "CORE + WIDE": ("CORE", "WIDE")}.get(tier)
     pool = summary if keep is None else summary[summary["tier"].isin(keep)]
@@ -476,35 +709,44 @@ def _panel() -> None:
         for r in pool.itertuples()
     }
 
-    preset_code, preset_cohorts = _PRESETS.get(preset, (None, None))
-    if preset_code in codes:
-        st.session_state["wb_code"] = preset_code
-        st.session_state.update({f"wb_c_{cid}": cid in preset_cohorts for cid, _ in COHORTS})
-
-    # Land on NASDAQ-100 rather than on whatever happens to carry the most open
-    # interest -- pure OI ranking puts 3-month SOFR first, which is a fine market
-    # and a strange thing to open on.
-    default_code = next((c for c in ("20974+", "1170E1") if c in codes), codes[0])
+    # A per-family widget key, because the market list and the cohort vocabulary both
+    # change with the family: a shared key would carry a NASDAQ code into the
+    # commodity report and land on "no rows for that market".
+    #
+    # Financials open on NASDAQ-100 rather than on whatever carries the most open
+    # interest, since pure OI ranking puts 3-month SOFR first -- a fine market and a
+    # strange front page. The other families just take their most liquid.
+    prefer = {"cftc_tff_fut": ("20974+", "1170E1")}.get(source, ())
+    default_code = next((c for c in prefer if c in codes), codes[0])
+    key = f"wb_code_{source}"
+    if st.session_state.get(key) not in codes:
+        st.session_state[key] = default_code
     code = st.selectbox(
         "Market",
         codes,
-        index=codes.index(default_code),
         format_func=lambda c: labels.get(c, c),
-        key="wb_code",
+        key=key,
         label_visibility="collapsed",
     )
 
-    boxes = st.columns(len(COHORTS))
+    # Cohorts come from the chosen report's own spec, because the three families
+    # classify traders differently and there is no shared vocabulary: "commercial"
+    # in legacy is not "producer + swap dealer" in disaggregated, and treating them
+    # as the same field would be a definitional error wearing a checkbox.
+    cohorts = tuple(
+        (c.id, _COHORT_LABEL.get(c.id, c.label)) for c in cftc_spec.spec_for(source).cohorts
+    )
+    defaults = _DEFAULT_COHORTS.get(source, (cohorts[0][0],))
+    boxes = st.columns(len(cohorts))
     chosen: list[str] = []
-    for (cid, label), col in zip(COHORTS, boxes):
+    for (cid, label), col in zip(cohorts, boxes):
         with col:
-            if st.checkbox(
-                label, value=st.session_state.get(f"wb_c_{cid}", cid in DEFAULT_COHORTS),
-                key=f"wb_c_{cid}",
-            ):
+            ckey = f"wb_c_{source}_{cid}"
+            if st.checkbox(label, value=st.session_state.get(ckey, cid in defaults),
+                           key=ckey):
                 chosen.append(cid)
 
-    sub = _market_frame(code)
+    sub = _market_frame(source, code)
     if sub.empty:
         st.info("No rows for that market.")
         return
@@ -517,7 +759,7 @@ def _panel() -> None:
         st.caption("Not enough history in this market to plot.")
         return
 
-    who = " + ".join(dict(COHORTS)[c] for c in chosen)
+    who = " + ".join(dict(cohorts)[c] for c in chosen)
     market_name = str(sub["market"].iloc[-1])
     st.markdown(
         f'<div class="card-head"><h2>{market_name}</h2>'
@@ -537,13 +779,21 @@ def _panel() -> None:
             frame["open_interest"],
             unit="% of open interest",
             kind="net_share",
-            breaks=_breaks(sub),
+            # NO `breaks=`: the dotted red rule at each contract re-specification is
+            # not drawn, by request. Nothing it carried is lost from the NUMBERS --
+            # the same segmentation still splits the open-interest percentile, so
+            # that rank is computed within the current contract definition rather
+            # than across a re-basing (see _oi_pctile), and the step in the open
+            # interest line remains visible in the strip. The line was labelling a
+            # step that is already on screen.
             price=price if not price.empty else None,
             price_label=ref.label if ref else "",
             # Log for anything that has compounded over decades -- an equity index
             # or a coin on a linear axis spends its first fifteen years flat on the
             # floor, which hides exactly the early positioning history the chart is
             # there to sit beside.
+            pctile=frame["pctile"],
+            oi_pctile=_oi_pctile(frame, sub.groupby("report_date")["contract_units"].first()),
             price_log=bool(ref and ref.symbol in _LOG_PRICE),
             # Taller with a price panel: three panels in 620px left the price
             # squeezed, and it is the one a reader orients by.
@@ -595,7 +845,11 @@ def _panel() -> None:
 
 
 def render() -> None:
-    stats = cache.file_stats(SOURCE) or {}
+    # The stamp reports the SELECTED family's newest report, not a fixed one --
+    # legacy, financials and commodities are separate publications and can be a week
+    # apart. Read outside the fragment so it is the same date the picker is showing.
+    source = st.session_state.get("wb_family", DEFAULT_FAMILY)
+    stats = cache.file_stats(source) or {}
     if stats.get("latest"):
         latest = pd.Timestamp(stats["latest"])
         age = (pd.Timestamp.today().normalize() - latest.normalize()).days
@@ -606,14 +860,16 @@ def render() -> None:
             unsafe_allow_html=True,
         )
     _panel()
-    caveat_block(SOURCE, PRICE_SOURCE)
+    caveat_block(source, PRICE_SOURCE)
 
 
 BOARD = Board(
     id="positioning",
     title="Positioning",
     render=render,
-    sources=(SOURCE,),
+    # Only the default family is a hard requirement: the others are selectable and a
+    # missing one is handled inside the panel rather than blocking the whole board.
+    sources=(DEFAULT_FAMILY,),
     order=10,
     blurb="Where the big cohorts are leaning, and how unusual that is.",
     group="CFTC",
