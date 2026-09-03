@@ -96,10 +96,40 @@ st.markdown(
       .hero-row .k-sm {{ font-size: .95rem; font-weight: 550; color: {T['ink_2']}; }}
       .hero-row .v {{ font-size: .85rem; color: {T['faint']}; margin-left: .4rem; }}
 
-      /* Plotly on the chart plane, ringed with a hairline rather than shadowed. */
+      /* Plotly on the chart plane, ringed with a hairline rather than shadowed.
+         NO PADDING AND NO BORDER, and that is a bug fix rather than a taste call.
+         Streamlit pins this element's height to the figure height and box-sizing is
+         border-box, so any padding or border steals from the content box and the
+         plot overflows by exactly that much -- which macOS Chrome draws as a
+         scrollbar across the chart. Zero of both makes the content box equal the
+         figure height and the overflow zero.
+         DO NOT "fix" this with height:auto. That was tried and it is far worse: the
+         container loses its definite height, plotly's responsive autosize recomputes
+         against a moving target, and the figure renders with its panels at the wrong
+         vertical positions and the x-axis labels stranded in the middle, settling
+         only seconds later when the resize observer catches up.
+         The card still reads as a card: the surface colour lifts it off the page and
+         the radius shapes it. The 1px ring was never doing much work. */
       [data-testid="stPlotlyChart"] {{ background: {T['surface']}; border-radius: 12px;
-        border: 1px solid {T['hairline']}; padding: .45rem .3rem .2rem;
-        margin-top: .7rem; position: relative; }}
+        border: none; padding: 0; overflow: hidden;
+        margin: 0; position: relative; }}
+
+      /* NO MARGIN ON THE CARD ITSELF -- the gap above the chart is set on the
+         element container instead, and that is the same bug as the padding above,
+         one box further out. Streamlit pins the CONTAINER's height to the figure
+         height too (760px) and gives it overflow:auto. A .7rem top margin on the
+         card therefore put 760px of content 11px down inside a 760px box:
+         scrollHeight 771 against clientHeight 760. Those 11px were charged twice --
+         a scrollbar drawn across the bottom of the chart, AND the card's own bottom
+         11px pushed outside the container and clipped off, which is what "the graph
+         is still cut off" was. Measured: container box top 626, card box top 637.
+         A margin on the container is OUTSIDE its box, so it moves the card down
+         without adding anything to scroll. overflow:visible is the belt to that
+         brace: if some future off-by-one overflows again it costs a stray pixel
+         rather than a scrollbar sawn through the x-axis. */
+      [data-testid="stElementContainer"]:has(> * > [data-testid="stPlotlyChart"]),
+      [data-testid="stElementContainer"]:has(> [data-testid="stPlotlyChart"]) {{
+        margin-top: .7rem; overflow: visible; }}
       /* The modebar is trimmed to the PNG download; keep it quiet until hover. */
       [data-testid="stPlotlyChart"] .modebar {{ opacity: 0; transition: opacity .18s; }}
       [data-testid="stPlotlyChart"]:hover .modebar {{ opacity: 1; }}
