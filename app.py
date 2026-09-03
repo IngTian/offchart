@@ -97,19 +97,22 @@ st.markdown(
       .hero-row .v {{ font-size: .85rem; color: {T['faint']}; margin-left: .4rem; }}
 
       /* Plotly on the chart plane, ringed with a hairline rather than shadowed.
-         height:auto and overflow:hidden are a BUG FIX, not styling. Streamlit pins
-         this element's height to the figure height (760px) and box-sizing is
-         border-box, so a 1px border plus vertical padding left a 758px content box
-         for a 760px plot: 9px of overflow, which macOS Chrome draws as a scrollbar
-         straight across the bottom of the chart, and which pushed the card's own
-         border through the x-axis labels. Letting the card grow to its content fixes
-         both; overflow:hidden keeps a future off-by-one from doing it again. Vertical
-         padding is 0 for the same reason -- the figure carries its own margins. */
+         NO PADDING AND NO BORDER, and that is a bug fix rather than a taste call.
+         Streamlit pins this element's height to the figure height and box-sizing is
+         border-box, so any padding or border steals from the content box and the
+         plot overflows by exactly that much -- which macOS Chrome draws as a
+         scrollbar across the chart. Zero of both makes the content box equal the
+         figure height and the overflow zero.
+         DO NOT "fix" this with height:auto. That was tried and it is far worse: the
+         container loses its definite height, plotly's responsive autosize recomputes
+         against a moving target, and the figure renders with its panels at the wrong
+         vertical positions and the x-axis labels stranded in the middle, settling
+         only seconds later when the resize observer catches up.
+         The card still reads as a card: the surface colour lifts it off the page and
+         the radius shapes it. The 1px ring was never doing much work. */
       [data-testid="stPlotlyChart"] {{ background: {T['surface']}; border-radius: 12px;
-        border: 1px solid {T['hairline']}; padding: 0 .3rem;
-        height: auto !important; overflow: hidden;
+        border: none; padding: 0; overflow: hidden;
         margin-top: .7rem; position: relative; }}
-      [data-testid="stFullScreenFrame"] {{ height: auto !important; }}
       /* The modebar is trimmed to the PNG download; keep it quiet until hover. */
       [data-testid="stPlotlyChart"] .modebar {{ opacity: 0; transition: opacity .18s; }}
       [data-testid="stPlotlyChart"]:hover .modebar {{ opacity: 1; }}

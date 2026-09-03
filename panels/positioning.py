@@ -92,10 +92,20 @@ _DEFAULT_COHORTS = {
     "cftc_legacy_fut": ("noncomm",),
 }
 
-#: Markets offered in the picker. CORE is the liquid, scannable set; the wider tiers
-#: are there because a specific question ("what are dealers doing in SOFR") should
-#: not require editing code. See lib/universe for the rule and the thresholds.
+#: Markets offered in the picker, narrowest first. See lib/universe for the rule.
+#:
+#: DEFAULT IS "everything", which is what a data terminal does: you type a ticker and
+#: it is either in the file or it is not. The tiers stay available because they are
+#: genuinely useful for browsing -- CORE is the couple-of-dozen markets worth
+#: scanning, and the liquidity rule behind it is what a cross-market screen needs --
+#: but making them the default meant a market being absent from the picker looked
+#: like a missing dataset rather than a filter.
+#:
+#: The cost is a long list: 140 markets in financials, 652 in commodities, 945 in
+#: legacy, most of them near-dead electricity and basis contracts. The selectbox is
+#: searchable, so the cost lands on browsing rather than on looking something up.
 TIERS = ("CORE", "CORE + WIDE", "everything")
+DEFAULT_TIER = "everything"
 
 
 @st.cache_data(show_spinner=False, max_entries=64)
@@ -307,6 +317,13 @@ def _smooth_crosshair(slug: str, price_label: str = "") -> None:
     So: plotly's own hover is switched off and an overlay takes over, updated inside
     requestAnimationFrame, which tracks the pointer every frame.
 
+    It also carries the second thing that has to happen in the browser: RESCALING
+    THE Y AXES WHEN THE X RANGE CHANGES. plotly does that for a zoom box and not
+    for a range button, and every control on this board changes x only. Both jobs
+    live in one injected script because both need the same graph div, the same
+    readiness polling and the same private-field guards; splitting them would mean
+    a second hidden iframe doing the same three things.
+
     THE COST, stated because it is real. This reads two private plotly fields
     (`_fullLayout` axis `_offset`/`_length` and `p2d`/`d2p`), so a plotly upgrade
     could break it. It is therefore fully guarded: if anything it needs is missing
@@ -385,10 +402,25 @@ def _smooth_crosshair(slug: str, price_label: str = "") -> None:
             function draw() {{
               raf = null;
               if (px == null) return;
-              const rel = px - xa._offset;
-              if (rel < 0 || rel > xa._length) {{ hide(); return; }}
-              const i = nearest(xa.p2l(rel));
-              const snap = xa.l2p(xs[i]) + xa._offset;   // sit on the observation
+              // Re-read the axis every frame rather than closing over the one
+              // captured at attach time. A range button relayouts the figure and
+              // plotly may hand back a REBUILT _fullLayout, so a captured axis
+              // still answers p2l with the OLD range: the tooltip then reported a
+              // date from the previous window (a zoom to 2025-2026 read "Oct 5,
+              // 2010" under a pointer that had not moved). A property read per
+              // frame is free next to the rAF itself.
+              const ax = gd._fullLayout && gd._fullLayout.xaxis;
+              if (!ax || typeof ax.p2l !== 'function') {{ hide(); return; }}
+              const rel = px - ax._offset;
+              if (rel < 0 || rel > ax._length) {{ hide(); return; }}
+              const i = nearest(ax.p2l(rel));
+              const snap = ax.l2p(xs[i]) + ax._offset;   // sit on the observation
+              // The nearest observation to the pointer can lie OUTSIDE a zoomed
+              // window (pointer at the left edge, last point of the prior year
+              // just off it). Snapping to it would park the line off the panel.
+              if (snap < ax._offset - 1 || snap > ax._offset + ax._length + 1) {{
+                hide(); return;
+              }}
               line.style.transform = 'translateX(' + snap + 'px)';
               line.style.top = top + 'px';
               line.style.height = (bottom - top) + 'px';
@@ -403,7 +435,7 @@ def _smooth_crosshair(slug: str, price_label: str = "") -> None:
               // Flip the tooltip to the other side near the right edge so it never
               // spills out of the card.
               const w = tip.offsetWidth || 150;
-              const flip = snap + 14 + w > xa._offset + xa._length;
+              const flip = snap + 14 + w > ax._offset + ax._length;
               tip.style.transform = 'translateX(' + (flip ? snap - w - 14 : snap + 14) + 'px)';
               tip.style.top = (top + 10) + 'px';
               if (!shown) {{
@@ -428,9 +460,138 @@ def _smooth_crosshair(slug: str, price_label: str = "") -> None:
             }}, {{passive: true, capture: true}});
             gd.addEventListener('mouseleave', hide, {{passive: true}});
 
-            // Only now, with the overlay proven installed, silence plotly's own
-            // throttled crosshair so the two do not fight.
-            W.Plotly.relayout(gd, {{hovermode: false}});
+            // ---- Y FOLLOWS X ----------------------------------------------------
+            // plotly rescales y on a ZOOM BOX but never when only the x range
+            // changes, and every control here changes only x. So "1Y" left the
+            // price panel showing one year of an index against sixteen years of
+            // scale: a flat ribbon pinned to the top of the panel with the whole
+            // middle empty. Nothing is wrong with the data in that picture, which
+            // is what makes it worth fixing -- it reads as a broken chart.
+            //
+            // Each axis is rescaled by what it DECLARES, not by which panel it is,
+            // so this keeps working if the panels are reordered or one is dropped:
+            //   rangemode 'tozero'  -> floor stays exactly 0 (open interest)
+            //   a trace filled to zero -> zero stays inside the range, because the
+            //     baseline is the first thing read on a net position
+            //   type 'log'          -> the range is in log10 units
+            // READ gd._fullData, NOT gd.data. plotly.py ships numeric columns to
+            // the browser as a BINARY typed-array spec -- gd.data[i].y is
+            // {{dtype, bdata, _inputArray}}, an object with no numeric indices. The
+            // first version of this loop iterated gd.data, read nothing, found no
+            // finite values and quietly changed no range at all: a rescale that
+            // silently does not happen. _fullData holds the decoded Float64Array.
+            const xsCache = new Map();
+            function msOf(i, t) {{
+              if (!xsCache.has(i)) {{
+                xsCache.set(i, Array.prototype.map.call(t.x || [],
+                  v => (v instanceof Date ? v.getTime() : +new Date(v))));
+              }}
+              return xsCache.get(i);
+            }}
+
+            // EACH AXIS'S INTENT IS CAPTURED ONCE, HERE, BEFORE ANYTHING RELAYOUTS.
+            // rangemode is only coerced onto _fullLayout while an axis is
+            // AUTORANGING. The moment the rescale below writes an explicit range,
+            // rangemode disappears from the live layout -- so re-reading it per
+            // call made open interest lose its zero floor on the second zoom (a
+            // strip that had read 0-436k came back as 232k-417k, turning a level
+            // series into a magnified wiggle). Read at attach time it is still
+            // there.
+            const rules = {{}};
+            Object.keys(fl).filter(k => /^yaxis\\d*$/.test(k)).forEach(k => {{
+              rules[k] = {{toZero: fl[k].rangemode === 'tozero',
+                          log: fl[k].type === 'log'}};
+            }});
+
+            function yUpdate() {{
+              const fl2 = gd._fullLayout;
+              const ax = fl2 && fl2.xaxis;
+              const traces = gd._fullData;
+              if (!ax || !ax.range || typeof ax.r2l !== 'function') return null;
+              if (!traces || !traces.length) return null;
+              const x0 = ax.r2l(ax.range[0]), x1 = ax.r2l(ax.range[1]);
+              const seen = {{}};
+              traces.forEach((t, i) => {{
+                const name = t.yaxis || 'y';
+                const g = seen[name] ||
+                  (seen[name] = {{lo: Infinity, hi: -Infinity, zero: false}});
+                if (t.fill === 'tozeroy') g.zero = true;
+                const xs2 = msOf(i, t), ys = t.y || [];
+                const n = Math.min(xs2.length, ys.length);
+                for (let k = 0; k < n; k++) {{
+                  if (xs2[k] < x0 || xs2[k] > x1) continue;
+                  const v = ys[k];
+                  if (v == null || !isFinite(v)) continue;
+                  if (v < g.lo) g.lo = v;
+                  if (v > g.hi) g.hi = v;
+                }}
+              }});
+              const upd = {{}};
+              Object.keys(seen).forEach(name => {{
+                const g = seen[name];
+                if (!isFinite(g.lo) || !isFinite(g.hi)) return;
+                const key = 'yaxis' + name.slice(1);   // 'y'->'yaxis', 'y2'->'yaxis2'
+                const rule = rules[key];
+                if (!rule) return;
+                const toZero = rule.toZero;
+                let lo = g.lo, hi = g.hi;
+                if (toZero || g.zero) {{ lo = Math.min(0, lo); hi = Math.max(0, hi); }}
+                if (rule.log) {{
+                  if (lo <= 0 || hi <= 0) return;   // a log axis cannot show these
+                  const l0 = Math.log10(lo), l1 = Math.log10(hi);
+                  const p = Math.max((l1 - l0) * 0.08, 0.01);
+                  upd[key + '.range'] = [l0 - p, l1 + p];
+                  // Ticks have to follow the span, because no fixed rule labels
+                  // both ends of this zoom. "D2" is the 1-2-5 ladder: clean over
+                  // sixteen years (2k/5k/10k/20k) and EMPTY over one, where the
+                  // window 22.7k-31.4k contains no rung. null hands it back to
+                  // plotly's adaptive log ticks, which label a narrow window
+                  // evenly (23k...31k) but crowd a wide one (2k,3k,4k...9k,20k).
+                  // One decade is the crossover.
+                  // tickmode MUST be set alongside dtick. Supplying dtick at all
+                  // flips tickmode to 'linear', and it does not flip back when
+                  // dtick goes to null -- the axis then kept a one-tick-per-decade
+                  // rule and a 22.7k-31.4k window came back with NO labels at all.
+                  const wide = (l1 - l0) >= 1;
+                  upd[key + '.tickmode'] = wide ? 'linear' : 'auto';
+                  upd[key + '.dtick'] = wide ? 'D2' : null;
+                }} else {{
+                  const p = (Math.abs(hi - lo) || Math.abs(hi) || 1) * 0.08;
+                  upd[key + '.range'] = [toZero ? lo : lo - p, hi + p];
+                }}
+              }});
+              return Object.keys(upd).length ? upd : null;
+            }}
+
+            let selfUpdate = false;
+            if (typeof gd.on === 'function') {{
+              gd.on('plotly_relayout', ev => {{
+                // Guard the recursion: the relayout below fires this same event.
+                if (selfUpdate) return;
+                if (!Object.keys(ev || {{}}).some(k => k.indexOf('xaxis') === 0)) return;
+                // The pointer has not moved, so nothing would redraw the overlay,
+                // and what it is showing describes the window that just went away.
+                hide();
+                const upd = yUpdate();
+                if (!upd) return;
+                selfUpdate = true;
+                Promise.resolve(W.Plotly.relayout(gd, upd))
+                  .catch(() => {{}})
+                  .then(() => {{ selfUpdate = false; }});
+              }});
+            }}
+
+            // Normalise the FIRST paint through the same rule the buttons use, so
+            // that the view on load and the view after clicking "All" are the same
+            // picture rather than two nearly-identical ones -- and so the log tick
+            // rule above has one home instead of being restated server-side.
+            // Folded into the relayout that silences plotly's own throttled
+            // crosshair (safe now that the overlay is proven installed) because
+            // one relayout is cheaper than two and neither carries an xaxis key,
+            // so the handler above ignores both.
+            const first = yUpdate() || {{}};
+            first.hovermode = false;
+            W.Plotly.relayout(gd, first);
             clearInterval(timer);
           }}
         }})();
@@ -507,8 +668,8 @@ def _panel() -> None:
             label_visibility="collapsed",
         )
     with top[1]:
-        tier = st.selectbox("Universe", TIERS, index=0, key="wb_tier",
-                            label_visibility="collapsed")
+        tier = st.selectbox("Universe", TIERS, index=TIERS.index(DEFAULT_TIER),
+                            key="wb_tier", label_visibility="collapsed")
     with top[2]:
         _pull_button(source)
 

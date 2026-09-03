@@ -76,12 +76,25 @@ FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif'
 #: Client-side zoom presets. These are the smoothness win in a Streamlit app:
 #: plotly handles them in the browser, so the range changes instantly and the
 #: server never reruns the script. A widget doing the same job would round-trip.
-RANGE_BUTTONS = (
-    dict(count=1, label="1Y", step="year", stepmode="backward"),
-    dict(count=5, label="5Y", step="year", stepmode="backward"),
-    dict(count=10, label="10Y", step="year", stepmode="backward"),
-    dict(step="all", label="All"),
-)
+#:
+#: "All" IS A BACKWARD SPAN, NOT step="all", AND THAT IS LOAD-BEARING. step="all"
+#: relayouts xaxis.autorange=true, and autorange here is not tight: a one-point
+#: marker trace (the endpoint dot) has zero span, so plotly pads it by a fraction
+#: of the axis LENGTH IN PIXELS, which on sixteen years of weekly data resolved to
+#: 347 extra days -- measured, and measured again with the marker at size 0 to rule
+#: the marker size out. Every other button is stepmode="backward" and so measures
+#: from range[1]; with a padded range[1] "1Y" meant "a year ending eleven months
+#: in the future" and put three weeks of data against the left edge. Keeping every
+#: button on an explicit backward count means no button can reintroduce autorange,
+#: so the axis end stays on the last observation for all four.
+def range_buttons(span_days: int) -> list[dict]:
+    """The four presets, with "All" spelled as an exact backward span in days."""
+    return [
+        dict(count=1, label="1Y", step="year", stepmode="backward"),
+        dict(count=5, label="5Y", step="year", stepmode="backward"),
+        dict(count=10, label="10Y", step="year", stepmode="backward"),
+        dict(count=max(span_days, 1), label="All", step="day", stepmode="backward"),
+    ]
 
 #: Passed to st.plotly_chart. No scroll-hijack, no logo, responsive.
 #:
@@ -605,6 +618,22 @@ def spotlight(
     # are not clipped to the plot area, which is exactly what is wanted here (the
     # pill lives in the right margin, beyond the last observation) and is also
     # why the right margin below has to grow to make room for it.
+    #
+    # THE PILL IS ANCHORED TO PAPER x, NOT TO ITS DATE, AND THAT IS A BUG FIX.
+    # An annotation on a data axis expands that axis's autorange to contain the
+    # annotation's BOX, in pixels. A pill hung 9px past the final observation
+    # therefore pushed the x range end ~11.5 months past the last report -- the
+    # padding was right-side-only, which is what gave it away, since range[0] sat
+    # exactly on the first observation. That alone was survivable in the "All"
+    # view (a little trailing white space), but the range buttons are
+    # stepmode="backward" and measure from range[1], so "1Y" resolved to a window
+    # ending a year in the FUTURE and showed three weeks of data crushed against
+    # the left edge under a full-history y scale. Paper x=1 puts the pill in the
+    # same place on screen -- the right margin -- while touching no axis range.
+    # It stays truthful because dragmode is False and scrollZoom is off, so the
+    # only way to move x is the four range buttons and every one of them ends on
+    # the last observation; the right edge IS the last observation. y stays in
+    # data coordinates so the pill still sits at its own line's terminal height.
     annotations = []
     for axis, panel_values, panel_pct, colour in (
         ("y", values, pct_at, ACCENT_LINE),
@@ -634,7 +663,7 @@ def spotlight(
         )
         annotations.append(
             dict(
-                xref="x", yref=axis, x=at, y=y,
+                xref="paper", yref=axis, x=1, y=y,
                 text=f"<b>{_ordinal(p)}</b>",
                 showarrow=False,
                 xanchor="left", xshift=9, yanchor="middle",
@@ -666,7 +695,24 @@ def spotlight(
                  line=dict(color=SEAL, width=1, dash="dot"), layer="below")
         )
 
-    log_ticks = dict(dtick=1, tickformat="~s", minor=dict(showgrid=False)) if price_log else {}
+    # The plotted x extent, taken from every series rather than from `values`
+    # alone, so a price history that starts earlier or ends later is not cropped.
+    x_union = values.index.union(open_interest.index)
+    if has_price:
+        x_union = x_union.union(price.index)
+    x_first, x_last = x_union.min(), x_union.max()
+    x_span_days = max(int((x_last - x_first).days), 1)
+
+    # NO dtick ON THE LOG PRICE AXIS -- plotly picks, and that is deliberate,
+    # because this axis is rescaled per zoom by the browser (see
+    # panels/positioning._smooth_crosshair) and no fixed decade rule survives both
+    # ends of that. dtick=1 is one tick per DECADE: an index running 2.4k to 26k
+    # crosses one decade boundary, so the whole 42%-tall panel was labelled "10k"
+    # and nothing else. dtick="D2" is the 1-2-5 ladder, which fixes the full-history
+    # view (2k/5k/10k/20k) and then labels a zoomed 22.7k-31.4k window with NOTHING,
+    # since no rung falls inside it. Plotly's own log autotick adapts to the span,
+    # which is the only thing that can. tickformat "~s" keeps them as 2k/20k/30k.
+    log_ticks = dict(tickformat="~s", minor=dict(showgrid=False)) if price_log else {}
 
     layout = dict(
         height=height,
@@ -681,9 +727,11 @@ def spotlight(
         # content box ~9-12px SHORTER than the plot -- measured 758px of box for a
         # 760px plot, which macOS Chrome renders as a scrollbar sawn across the
         # bottom of the chart and, once that is suppressed, as the year labels
-        # being eaten by the card edge. The CSS in app.py is the real fix (let the
-        # card size to its content); this margin is the belt to that braces, so a
-        # future off-by-one costs empty pixels instead of the axis.
+        # being eaten by the card edge. The CSS in app.py is the real fix (zero
+        # border and zero padding, so the content box equals the figure height
+        # exactly -- NOT height:auto, which was tried and broke the layout worse);
+        # this margin is the belt to that braces, so a future off-by-one costs
+        # empty pixels instead of the axis.
         #
         # Right grows when a percentile pill is drawn, because the pill hangs
         # PAST the last observation and the last observation can be flush with the
@@ -736,8 +784,11 @@ def spotlight(
             spikethickness=1,
             spikecolor=MUTED,
             spikedash="solid",
+            # Explicit, so autorange's marker padding never applies. See
+            # range_buttons() for the 347-day measurement behind this.
+            range=[x_first, x_last],
             rangeselector=dict(
-                buttons=list(RANGE_BUTTONS),
+                buttons=range_buttons(x_span_days),
                 bgcolor=theme.c("chip"),
                 activecolor=ACCENT_FILL,
                 bordercolor=theme.c("baseline"),
