@@ -194,14 +194,6 @@ def _price_at(symbol: str, dates: tuple) -> pd.Series:
     )
 
 
-def _breaks(sub: pd.DataFrame) -> tuple:
-    """Contract re-specification dates, so the open-interest step is explained."""
-    week = sub.groupby("report_date")["contract_units"].first()
-    ids = segments.segment_ids(pd.Series(week.index), week)
-    starts = pd.Series(week.index)[ids.ne(ids.shift()) & ids.gt(0)]
-    return tuple(starts)
-
-
 def _hero(frame: pd.DataFrame, who: str) -> None:
     last = frame.iloc[-1]
     share, pctile, chg = last["share"], last["pctile"], last["chg_2w"]
@@ -361,12 +353,28 @@ def _smooth_crosshair(slug: str, price_label: str = "") -> None:
                 || xa._offset == null || xa._length == null) {{
               clearInterval(timer); return;
             }}
-            const yAxes = Object.keys(fl).filter(k => /^yaxis\\d*$/.test(k))
-                            .map(k => fl[k])
-                            .filter(a => a && a._offset != null && a._length != null);
-            if (!yAxes.length) {{ clearInterval(timer); return; }}
-            const top = Math.min(...yAxes.map(a => a._offset));
-            const bottom = Math.max(...yAxes.map(a => a._offset + a._length));
+            // The KEY NAMES are fixed for the life of the figure; the offsets behind
+            // them are not, so only the names are captured. Measuring the band once
+            // at attach was wrong: expanding the chart to full screen re-lays the
+            // figure out taller, and a crosshair sized to the 760px version stopped
+            // two thirds of the way down the enlarged one -- a line that ends in
+            // mid-air over the panel it is supposed to be reading.
+            const yKeys = Object.keys(fl).filter(k => /^yaxis\\d*$/.test(k));
+            if (!yKeys.length) {{ clearInterval(timer); return; }}
+
+            function band() {{
+              const fl2 = gd._fullLayout;
+              if (!fl2) return null;
+              let t = Infinity, b = -Infinity;
+              for (const k of yKeys) {{
+                const a = fl2[k];
+                if (!a || a._offset == null || a._length == null) continue;
+                if (a._offset < t) t = a._offset;
+                if (a._offset + a._length > b) b = a._offset + a._length;
+              }}
+              return (isFinite(t) && isFinite(b)) ? {{t: t, b: b}} : null;
+            }}
+            if (!band()) {{ clearInterval(timer); return; }}
 
             // The hover traces carry [price, net, open interest] per point. Take the
             // first one; they all share the same customdata.
@@ -421,9 +429,11 @@ def _smooth_crosshair(slug: str, price_label: str = "") -> None:
               if (snap < ax._offset - 1 || snap > ax._offset + ax._length + 1) {{
                 hide(); return;
               }}
+              const bd = band();
+              if (!bd) {{ hide(); return; }}
               line.style.transform = 'translateX(' + snap + 'px)';
-              line.style.top = top + 'px';
-              line.style.height = (bottom - top) + 'px';
+              line.style.top = bd.t + 'px';
+              line.style.height = (bd.b - bd.t) + 'px';
 
               const row = cd[i] || [];
               const parts = ['<b>' + when(xs[i]) + '</b>'];
@@ -437,7 +447,7 @@ def _smooth_crosshair(slug: str, price_label: str = "") -> None:
               const w = tip.offsetWidth || 150;
               const flip = snap + 14 + w > ax._offset + ax._length;
               tip.style.transform = 'translateX(' + (flip ? snap - w - 14 : snap + 14) + 'px)';
-              tip.style.top = (top + 10) + 'px';
+              tip.style.top = (bd.t + 10) + 'px';
               if (!shown) {{
                 shown = true;
                 line.style.opacity = '1';
@@ -769,7 +779,13 @@ def _panel() -> None:
             frame["open_interest"],
             unit="% of open interest",
             kind="net_share",
-            breaks=_breaks(sub),
+            # NO `breaks=`: the dotted red rule at each contract re-specification is
+            # not drawn, by request. Nothing it carried is lost from the NUMBERS --
+            # the same segmentation still splits the open-interest percentile, so
+            # that rank is computed within the current contract definition rather
+            # than across a re-basing (see _oi_pctile), and the step in the open
+            # interest line remains visible in the strip. The line was labelling a
+            # step that is already on screen.
             price=price if not price.empty else None,
             price_label=ref.label if ref else "",
             # Log for anything that has compounded over decades -- an equity index

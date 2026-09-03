@@ -112,7 +112,24 @@ st.markdown(
          the radius shapes it. The 1px ring was never doing much work. */
       [data-testid="stPlotlyChart"] {{ background: {T['surface']}; border-radius: 12px;
         border: none; padding: 0; overflow: hidden;
-        margin-top: .7rem; position: relative; }}
+        margin: 0; position: relative; }}
+
+      /* NO MARGIN ON THE CARD ITSELF -- the gap above the chart is set on the
+         element container instead, and that is the same bug as the padding above,
+         one box further out. Streamlit pins the CONTAINER's height to the figure
+         height too (760px) and gives it overflow:auto. A .7rem top margin on the
+         card therefore put 760px of content 11px down inside a 760px box:
+         scrollHeight 771 against clientHeight 760. Those 11px were charged twice --
+         a scrollbar drawn across the bottom of the chart, AND the card's own bottom
+         11px pushed outside the container and clipped off, which is what "the graph
+         is still cut off" was. Measured: container box top 626, card box top 637.
+         A margin on the container is OUTSIDE its box, so it moves the card down
+         without adding anything to scroll. overflow:visible is the belt to that
+         brace: if some future off-by-one overflows again it costs a stray pixel
+         rather than a scrollbar sawn through the x-axis. */
+      [data-testid="stElementContainer"]:has(> * > [data-testid="stPlotlyChart"]),
+      [data-testid="stElementContainer"]:has(> [data-testid="stPlotlyChart"]) {{
+        margin-top: .7rem; overflow: visible; }}
       /* The modebar is trimmed to the PNG download; keep it quiet until hover. */
       [data-testid="stPlotlyChart"] .modebar {{ opacity: 0; transition: opacity .18s; }}
       [data-testid="stPlotlyChart"]:hover .modebar {{ opacity: 1; }}
