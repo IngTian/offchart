@@ -34,11 +34,24 @@ import io
 import pandas as pd
 import streamlit as st
 
-from lib import cache, charts, metrics, pricemap, segments, theme
+from lib import cache, cftc_spec, charts, metrics, pricemap, segments, theme
 from lib.ui import caveat_block
 from panels import Board
 
-SOURCE = "cftc_tff_fut"
+#: The report families offered, in the order a person would reach for them. Each is
+#: a separate CFTC publication with its OWN cohort vocabulary, which is why the
+#: checkbox row is derived from the chosen family rather than hardcoded.
+#:
+#: Not offered: the futures-and-options-combined variants and the supplemental
+#: report. They are ingested and available, but combined-basis figures do not
+#: reconcile against futures-only ones, and putting them in the same picker invites
+#: comparing two numbers that are not comparable. Add them when there is a reason.
+FAMILIES = (
+    ("cftc_tff_fut", "Financial futures — equity indices, rates, FX, crypto"),
+    ("cftc_disagg_fut", "Commodities — energy, metals, grains, softs, livestock"),
+    ("cftc_legacy_fut", "Legacy, every market — the only history before 2006"),
+)
+DEFAULT_FAMILY = "cftc_tff_fut"
 PRICE_SOURCE = "prices"
 
 #: Series that have compounded enough over their history that a linear axis is
@@ -48,34 +61,47 @@ PRICE_SOURCE = "prices"
 _LOG_PRICE = frozenset({"^GSPC", "^NDX", "^DJI", "^RUT", "^SP400",
                         "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD"})
 
-#: cohort id -> the label a person uses. Order is the report's own order, dealers
-#: through to the small traders, so the checkbox row reads as a spectrum from the
-#: sell side to retail rather than alphabetically.
-COHORTS = (
-    ("dealer", "Dealers"),
-    ("asset_mgr", "Asset managers"),
-    ("lev_money", "Hedge funds"),
-    ("other_rept", "Other reportables"),
-    ("nonrept", "Small traders"),
-)
-
-DEFAULT_COHORTS = ("asset_mgr", "lev_money")
-
-#: Markets offered in the picker. CORE is the liquid, scannable set; the wider
-#: tiers are available because a specific question ("what are dealers doing in
-#: SOFR") should not require editing code.
-TIERS = ("CORE", "CORE + WIDE", "everything")
-
-_PRESETS = {
-    "VIX · asset managers": ("1170E1", ("asset_mgr",)),
-    "NASDAQ-100 · asset mgr + hedge funds": ("20974+", ("asset_mgr", "lev_money")),
+#: Short checkbox labels for the cohort ids that appear across the three families.
+#: The spec's own labels are accurate and too long for a checkbox row
+#: ("Producer / merchant / processor / user"), so these are the reading names; any
+#: id not listed falls back to the spec label, which means a new cohort shows up
+#: with its real name rather than vanishing.
+_COHORT_LABEL = {
+    # tff, sell side through to retail
+    "dealer": "Dealers",
+    "asset_mgr": "Asset managers",
+    "lev_money": "Hedge funds",
+    # disaggregated
+    "prod_merc": "Producers",
+    "swap": "Swap dealers",
+    "m_money": "Managed money",
+    # legacy
+    "noncomm": "Non-commercial",
+    "comm": "Commercial",
+    # shared
+    "other_rept": "Other reportables",
+    "nonrept": "Small traders",
 }
+
+#: Which cohorts start ticked, per family. In each case the speculative money: the
+#: cohorts whose position is a view rather than a hedge against physical or a
+#: market-making book.
+_DEFAULT_COHORTS = {
+    "cftc_tff_fut": ("asset_mgr", "lev_money"),
+    "cftc_disagg_fut": ("m_money",),
+    "cftc_legacy_fut": ("noncomm",),
+}
+
+#: Markets offered in the picker. CORE is the liquid, scannable set; the wider tiers
+#: are there because a specific question ("what are dealers doing in SOFR") should
+#: not require editing code. See lib/universe for the rule and the thresholds.
+TIERS = ("CORE", "CORE + WIDE", "everything")
 
 
 @st.cache_data(show_spinner=False, max_entries=64)
-def _market_frame(code: str) -> pd.DataFrame:
+def _market_frame(source: str, code: str) -> pd.DataFrame:
     """Every cohort row for one market, indexed by report date. Cached per market."""
-    df = cache.read(SOURCE)
+    df = cache.read(source)
     sub = df[df["market_code"].astype(str) == code].copy()
     if sub.empty:
         return sub
@@ -103,6 +129,31 @@ def _measure(sub: pd.DataFrame, cohorts: tuple[str, ...]) -> pd.DataFrame:
     return out
 
 
+def _oi_pctile(out: pd.DataFrame, units: pd.Series) -> pd.Series:
+    """Causal rank of open interest, WITHIN its contract-unit segment.
+
+    The share's rank can span a contract re-specification safely, because
+    net/open-interest is dimensionless and a re-denomination cancels top and bottom.
+    Open interest in CONTRACTS is not: when CFTC re-based the Consolidated equity
+    indices on 2023-05-02, NASDAQ-100 open interest stepped 49,531 -> 255,954 with no
+    change in positioning, so an expanding rank over the whole history says "98th
+    percentile" about a number that is mostly a units change. That reading was on
+    screen one pixel-column to the right of the break line proving it.
+
+    So this one is segmented and the share's is not -- an asymmetry that looks
+    inconsistent until you notice one measure is a ratio and the other is a level.
+    Ranking restarts at each break, which means it is honestly blank-ish early in a
+    new segment rather than confidently wrong.
+    """
+    dates = pd.Series(out.index)
+    seg = segments.segment_ids(dates, units.reindex(out.index))
+    oi = out["open_interest"]
+    ranked = pd.Series(float("nan"), index=out.index)
+    for _, idx in oi.groupby(seg.to_numpy()).groups.items():
+        ranked.loc[idx] = metrics.expanding_percentile(oi.loc[idx]).to_numpy()
+    return ranked
+
+
 @st.cache_data(show_spinner=False, max_entries=32)
 def _price_at(symbol: str, dates: tuple) -> pd.Series:
     """The mapped price series, sampled AS OF each CFTC report date.
@@ -124,7 +175,13 @@ def _price_at(symbol: str, dates: tuple) -> pd.Series:
     if one.empty:
         return pd.Series(dtype=float)
 
-    return metrics.asof(one["date"], one["close"], pd.Series(list(dates)))
+    # 10 days: a weekly report should always have a close within about a week, so
+    # anything older means the price series has a hole or has died. Beyond the cap
+    # the panel gets NaN and simply draws a gap, which is honest, instead of a
+    # carried-forward flat line that reads as a price standing still.
+    return metrics.asof(
+        one["date"], one["close"], pd.Series(list(dates)), max_staleness_days=10
+    )
 
 
 def _breaks(sub: pd.DataFrame) -> tuple:
@@ -383,8 +440,8 @@ def _smooth_crosshair(slug: str, price_label: str = "") -> None:
     )
 
 
-def _pull_button() -> None:
-    """Fetch the newest CFTC reports on demand.
+def _pull_button(source: str) -> None:
+    """Fetch the newest reports for the SELECTED family, plus prices, on demand.
 
     NOTE THIS BREAKS A RULE THIS REPO OTHERWISE KEEPS. The display layer is
     supposed never to fetch, so that a chart cannot show a number that is not in
@@ -409,7 +466,7 @@ def _pull_button() -> None:
         # Positioning and prices, in that order: a failed price pull must not stop
         # the CFTC data from landing, since the board works without a price panel
         # and does not work without positions.
-        for sid in (SOURCE, PRICE_SOURCE):
+        for sid in (source, PRICE_SOURCE):
             try:
                 with contextlib.redirect_stdout(log):
                     report = ingest_job.run_one(get_source(sid), backfill=False)
@@ -440,25 +497,30 @@ def _pull_button() -> None:
 @st.fragment
 def _panel() -> None:
     """Controls plus chart. A fragment, so a checkbox does not rerun the page."""
-    summary = cache.market_summary(SOURCE)
-    if summary.empty:
-        st.info(f"`{SOURCE}` has no data yet. Use the pull button, or run the ingest job.")
-        return
-
-    top = st.columns([2.1, 1.15, 1.15])
+    top = st.columns([2.6, 1.05, 1.05])
     with top[0]:
-        preset = st.segmented_control(
-            "Preset", ["—", *_PRESETS], default="—", label_visibility="collapsed"
+        source = st.selectbox(
+            "Report",
+            [sid for sid, _ in FAMILIES],
+            format_func=lambda s: dict(FAMILIES)[s],
+            key="wb_family",
+            label_visibility="collapsed",
         )
     with top[1]:
-        tier = st.selectbox("Universe", TIERS, index=0, label_visibility="collapsed")
+        tier = st.selectbox("Universe", TIERS, index=0, key="wb_tier",
+                            label_visibility="collapsed")
     with top[2]:
-        _pull_button()
+        _pull_button(source)
 
     # Survives the rerun the pull triggers; cleared once shown so it does not
     # linger as a stale claim about data that has since changed.
     if note := st.session_state.pop("wb_pull", None):
         st.caption(note)
+
+    summary = cache.market_summary(source)
+    if summary.empty:
+        st.info(f"`{source}` has no data yet. Use the pull button, or run the ingest job.")
+        return
 
     keep = {"CORE": ("CORE",), "CORE + WIDE": ("CORE", "WIDE")}.get(tier)
     pool = summary if keep is None else summary[summary["tier"].isin(keep)]
@@ -476,35 +538,44 @@ def _panel() -> None:
         for r in pool.itertuples()
     }
 
-    preset_code, preset_cohorts = _PRESETS.get(preset, (None, None))
-    if preset_code in codes:
-        st.session_state["wb_code"] = preset_code
-        st.session_state.update({f"wb_c_{cid}": cid in preset_cohorts for cid, _ in COHORTS})
-
-    # Land on NASDAQ-100 rather than on whatever happens to carry the most open
-    # interest -- pure OI ranking puts 3-month SOFR first, which is a fine market
-    # and a strange thing to open on.
-    default_code = next((c for c in ("20974+", "1170E1") if c in codes), codes[0])
+    # A per-family widget key, because the market list and the cohort vocabulary both
+    # change with the family: a shared key would carry a NASDAQ code into the
+    # commodity report and land on "no rows for that market".
+    #
+    # Financials open on NASDAQ-100 rather than on whatever carries the most open
+    # interest, since pure OI ranking puts 3-month SOFR first -- a fine market and a
+    # strange front page. The other families just take their most liquid.
+    prefer = {"cftc_tff_fut": ("20974+", "1170E1")}.get(source, ())
+    default_code = next((c for c in prefer if c in codes), codes[0])
+    key = f"wb_code_{source}"
+    if st.session_state.get(key) not in codes:
+        st.session_state[key] = default_code
     code = st.selectbox(
         "Market",
         codes,
-        index=codes.index(default_code),
         format_func=lambda c: labels.get(c, c),
-        key="wb_code",
+        key=key,
         label_visibility="collapsed",
     )
 
-    boxes = st.columns(len(COHORTS))
+    # Cohorts come from the chosen report's own spec, because the three families
+    # classify traders differently and there is no shared vocabulary: "commercial"
+    # in legacy is not "producer + swap dealer" in disaggregated, and treating them
+    # as the same field would be a definitional error wearing a checkbox.
+    cohorts = tuple(
+        (c.id, _COHORT_LABEL.get(c.id, c.label)) for c in cftc_spec.spec_for(source).cohorts
+    )
+    defaults = _DEFAULT_COHORTS.get(source, (cohorts[0][0],))
+    boxes = st.columns(len(cohorts))
     chosen: list[str] = []
-    for (cid, label), col in zip(COHORTS, boxes):
+    for (cid, label), col in zip(cohorts, boxes):
         with col:
-            if st.checkbox(
-                label, value=st.session_state.get(f"wb_c_{cid}", cid in DEFAULT_COHORTS),
-                key=f"wb_c_{cid}",
-            ):
+            ckey = f"wb_c_{source}_{cid}"
+            if st.checkbox(label, value=st.session_state.get(ckey, cid in defaults),
+                           key=ckey):
                 chosen.append(cid)
 
-    sub = _market_frame(code)
+    sub = _market_frame(source, code)
     if sub.empty:
         st.info("No rows for that market.")
         return
@@ -517,7 +588,7 @@ def _panel() -> None:
         st.caption("Not enough history in this market to plot.")
         return
 
-    who = " + ".join(dict(COHORTS)[c] for c in chosen)
+    who = " + ".join(dict(cohorts)[c] for c in chosen)
     market_name = str(sub["market"].iloc[-1])
     st.markdown(
         f'<div class="card-head"><h2>{market_name}</h2>'
@@ -544,6 +615,8 @@ def _panel() -> None:
             # or a coin on a linear axis spends its first fifteen years flat on the
             # floor, which hides exactly the early positioning history the chart is
             # there to sit beside.
+            pctile=frame["pctile"],
+            oi_pctile=_oi_pctile(frame, sub.groupby("report_date")["contract_units"].first()),
             price_log=bool(ref and ref.symbol in _LOG_PRICE),
             # Taller with a price panel: three panels in 620px left the price
             # squeezed, and it is the one a reader orients by.
@@ -595,7 +668,11 @@ def _panel() -> None:
 
 
 def render() -> None:
-    stats = cache.file_stats(SOURCE) or {}
+    # The stamp reports the SELECTED family's newest report, not a fixed one --
+    # legacy, financials and commodities are separate publications and can be a week
+    # apart. Read outside the fragment so it is the same date the picker is showing.
+    source = st.session_state.get("wb_family", DEFAULT_FAMILY)
+    stats = cache.file_stats(source) or {}
     if stats.get("latest"):
         latest = pd.Timestamp(stats["latest"])
         age = (pd.Timestamp.today().normalize() - latest.normalize()).days
@@ -606,14 +683,16 @@ def render() -> None:
             unsafe_allow_html=True,
         )
     _panel()
-    caveat_block(SOURCE, PRICE_SOURCE)
+    caveat_block(source, PRICE_SOURCE)
 
 
 BOARD = Board(
     id="positioning",
     title="Positioning",
     render=render,
-    sources=(SOURCE,),
+    # Only the default family is a hard requirement: the others are selectable and a
+    # missing one is handled inside the panel rather than blocking the whole board.
+    sources=(DEFAULT_FAMILY,),
     order=10,
     blurb="Where the big cohorts are leaning, and how unusual that is.",
     group="CFTC",
