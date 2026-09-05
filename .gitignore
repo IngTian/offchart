@@ -9,6 +9,18 @@ venv/
 
 # data/ is deliberately NOT ignored -- committing it is the whole mechanism by
 # which snapshot-only sources ever acquire a history.
+#
+# THE ONE EXCEPTION, per source, is data we are not licensed to redistribute. The
+# University of Michigan grants permission-free USE of its public Surveys of
+# Consumers tables and separately prohibits redistribution without written consent
+# (faq.php vs agreement.php -- see sources/umich.py for both quotes). Charting them
+# is fine; mirroring them into a public repo is not. So this file is fetched and
+# read like any other, and simply never committed.
+#
+# Do not add lines here by hand: a source declares `redistributable=False` and
+# tests/test_sources.py asserts, via `git check-ignore`, that its parquet is
+# ignored. Adding the flag without the line fails the suite, and vice versa.
+data/umich_sca.parquet
 
 # Boards that were built and then set aside. Kept on disk so they are cheap to
 # revive, out of the tree so the repo shows only what ships. They are still in
