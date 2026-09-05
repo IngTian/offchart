@@ -134,21 +134,23 @@ def png_config(filename: str, scale: int = 3) -> dict:
     return cfg
 
 
-def _ordinal(p: float | None) -> str:
-    """A percentile as an ordinal: 40.2 -> '40th', 1.4 -> '1st', NaN -> em dash.
+def ordinal_parts(p: float | None) -> tuple[str, str]:
+    """A percentile split into (number, suffix): 40.2 -> ('40', 'th').
 
-    Rounded with the SAME format string the hero text uses (`:.0f`), because the
-    bubble and the sentence above the chart print the same number and reading
-    "40th" beside "41st percentile" would look like two different statistics.
-    That inherits banker's rounding at exactly .5, which is a price worth paying
-    for the two agreeing.
+    Two renderings, ONE rule. The bubble on the chart joins the pair; the hero
+    sentence above the chart sets the suffix in a smaller face and so needs them
+    apart. Before this existed the hero built its own ordinal by concatenating a
+    hardcoded "th", which printed "53th" beside a bubble reading "53rd" -- the
+    same statistic contradicting itself on one screen, which invites a reader to
+    distrust both numbers rather than one. It also used `:.0f`, inheriting the
+    rounding this function exists to avoid.
 
-    An em dash for a missing rank rather than 'nan': a percentile is genuinely
-    blank during a series' warm-up (the first observation is the max of a
+    A missing rank returns ('—', ''), not 'nan': a percentile is genuinely blank
+    during a series' warm-up (the first observation is the maximum of a
     one-element set), and 'nanth' next to a real figure reads as a bug.
     """
     if p is None or pd.isna(p):
-        return "—"
+        return "—", ""
     v = float(p)
     # FLOOR, not round-to-nearest, and 100 reserved for exactly 100.
     #
@@ -163,7 +165,12 @@ def _ordinal(p: float | None) -> str:
         "th" if n % 100 in (11, 12, 13)
         else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
     )
-    return f"{n}{suffix}"
+    return str(n), suffix
+
+
+def _ordinal(p: float | None) -> str:
+    """A percentile as one ordinal string: 40.2 -> '40th', NaN -> em dash."""
+    return "".join(ordinal_parts(p))
 
 
 def _align_pctile(pct: pd.Series | None, index: pd.Index) -> pd.Series | None:

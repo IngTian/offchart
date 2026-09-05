@@ -200,8 +200,16 @@ def _hero(frame: pd.DataFrame, who: str) -> None:
     side = "net long" if share > 0 else "net short" if share < 0 else "flat"
     n = int(frame["share"].notna().sum())
     delta = f"{chg:+.2f}pp over 2 weeks" if pd.notna(chg) else "no week two back"
+    # The ordinal comes from lib.charts, which is also what the bubble on the chart
+    # uses. This line used to build its own by pasting a hardcoded "th" onto
+    # `{pctile:.0f}`, which printed "53th" next to a bubble reading "53rd" -- and
+    # rounded, so 99.75 read "100th", a record the series had not set.
+    rank_n, rank_suffix = charts.ordinal_parts(pctile)
     where = (
-        "lower than all but a handful of weeks on record" if pctile <= 10
+        # A blank rank is not a middling one. Saying "unremarkable" about a number
+        # that does not exist yet is the same error as printing "nanth".
+        "no rank yet -- too little history" if pd.isna(pctile)
+        else "lower than all but a handful of weeks on record" if pctile <= 10
         else "higher than all but a handful of weeks on record" if pctile >= 90
         else "unremarkable against its own history"
     )
@@ -211,7 +219,7 @@ def _hero(frame: pd.DataFrame, who: str) -> None:
               <div class="hero-side">{who} &mdash; <strong>{side}</strong></div>
             </div>
             <div class="hero-row">
-              <div><span class="k">{pctile:.0f}<span class="k-unit">th</span></span>
+              <div><span class="k">{rank_n}<span class="k-unit">{rank_suffix}</span></span>
                    <span class="v">percentile of its own {n:,} weeks &mdash; {where}</span></div>
               <div><span class="k-sm">{delta}</span></div>
             </div>""",

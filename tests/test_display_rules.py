@@ -451,6 +451,58 @@ def test_fmt_change_does_not_render_a_nan_as_a_figure() -> None:
     assert "nan" not in charts.fmt_change(float("nan"), "flow", "contracts").lower()
 
 
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        # The suffix rule itself. The hero line used to paste a hardcoded "th" onto
+        # the number, so EVERY rank ending 1, 2 or 3 was printed wrong -- "53th"
+        # sat next to a chart bubble reading "53rd", the same statistic disagreeing
+        # with itself on one screen.
+        (1.0, "1st"), (2.0, "2nd"), (3.0, "3rd"), (4.0, "4th"),
+        (21.0, "21st"), (22.0, "22nd"), (23.0, "23rd"), (53.0, "53rd"),
+        (91.0, "91st"), (92.0, "92nd"),
+        # The teens are the exception to the exception.
+        (11.0, "11th"), (12.0, "12th"), (13.0, "13th"),
+        # Floors rather than rounds, so a near-record cannot print as a record and
+        # a small positive rank cannot print as the impossible "0th".
+        (99.75, "99th"), (100.0, "100th"), (0.14, "1st"), (40.2, "40th"),
+    ],
+)
+def test_ordinal_suffix_and_flooring(value: float, expected: str) -> None:
+    assert charts._ordinal(value) == expected
+    number, suffix = charts.ordinal_parts(value)
+    assert number + suffix == expected, "the split rendering must agree with the joined one"
+
+
+def test_ordinal_of_a_missing_rank_is_not_a_figure() -> None:
+    """A warm-up rank is genuinely blank, and 'nanth' beside a real number reads as
+    a bug rather than as an absence."""
+    assert charts._ordinal(float("nan")) == "—"
+    assert charts.ordinal_parts(float("nan")) == ("—", "")
+    assert charts.ordinal_parts(None) == ("—", "")
+
+
+def test_hero_renders_its_rank_through_the_shared_ordinal() -> None:
+    """The hero must not build its own ordinal. It did, and printed '53th'.
+
+    Read as source rather than rendered, because rendering needs a Streamlit script
+    context; the defect was a hardcoded suffix in the f-string, which is visible
+    here.
+    """
+    src = (ROOT / "panels" / "positioning.py").read_text()
+    hero = src[src.index("def _hero("):]
+    hero = hero[: hero.index("\ndef ")]
+    # Comments are stripped before scanning. The fix carries a comment quoting the
+    # old broken format string, and a scan that cannot tell code from a description
+    # of the bug would forbid explaining it -- so it would fail on the fix itself.
+    code = "\n".join(
+        ln for ln in hero.splitlines() if not ln.lstrip().startswith("#")
+    )
+    assert "ordinal_parts" in code, "the hero must use the shared ordinal rule"
+    assert '"k-unit">th<' not in code.replace(" ", ""), "hardcoded 'th' suffix is back"
+    assert ":.0f}" not in code, "the rank must not be rounded back into a false record"
+
+
 def test_ranked_bars_diverges_only_for_a_signed_kind() -> None:
     signed = charts.ranked_bars(["a", "b"], [12.0, -8.0], unit="contracts", kind="net")
     colors = signed.data[0].marker.color
