@@ -26,3 +26,20 @@ data/umich_sca.parquet
 # revive, out of the tree so the repo shows only what ships. They are still in
 # git history: `git show 42aa2dd:panels/_parked/screen.py` recovers any of them.
 .parked/
+
+# Claude Code's working directory. Ignored SELECTIVELY rather than as a whole,
+# because the two things in it are ignorable for opposite reasons and a blanket
+# `.claude/` would also pre-emptively exclude shared project config
+# (.claude/settings.json, .claude/skills/) that IS worth committing if it is ever
+# added.
+#
+# worktrees/ is the one that matters: `git worktree add` puts linked checkouts here,
+# each a full copy of the tree including data/. Currently 118 MB. Each also contains
+# a `.git` FILE, so git sees a nested repository and `git add -A` either warns or
+# writes a gitlink -- neither is wanted, and both are confusing to undo.
+#
+# settings.local.json is machine-local by construction; that is what the `.local.`
+# infix means. Nothing secret in it today (a permission allowlist), but it is
+# per-developer state and does not belong to anyone else.
+.claude/worktrees/
+.claude/settings.local.json
