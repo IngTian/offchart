@@ -117,6 +117,7 @@ import urllib.request
 
 import pandas as pd
 
+from lib import store
 from lib.schema import TableSchema
 
 BASE = "https://www.sca.isr.umich.edu/files"
@@ -176,8 +177,20 @@ def _read_table(name: str, columns: dict[str, str]) -> pd.DataFrame:
         )
 
     out = []
+    saw_preliminary = False
     for row in rows:
-        month = MONTHS.get((row.get("Month") or "").strip())
+        token = (row.get("Month") or "").strip()
+        # A " (P)" suffix marks a PRELIMINARY reading. These monthly tables are
+        # final-only today -- there is no (P) row in any of them, and a survey of
+        # eight archived release windows found none -- so this branch should never
+        # fire. It exists because the alternative failure is silent: an unhandled
+        # "August (P)" simply misses the month map, the row is skipped as a
+        # footnote, and the board quietly stops at the previous month while looking
+        # perfectly healthy. Strip it, keep the observation, and say so loudly.
+        if token.endswith("(P)"):
+            saw_preliminary = True
+            token = token[: -len("(P)")].strip()
+        month = MONTHS.get(token)
         year = (row.get("YYYY") or "").strip()
         if month is None or not year.isdigit():
             # A footnote line, not an observation. Skipped, but counted below so a
@@ -194,6 +207,14 @@ def _read_table(name: str, columns: dict[str, str]) -> pd.DataFrame:
         raise RuntimeError(
             f"{name}: only {kept} of {len(rows)} rows parsed as observations. Either "
             "the month names changed or the file is no longer a plain table."
+        )
+    if saw_preliminary:
+        print(
+            f"  ! {name}: contains a PRELIMINARY '(P)' row. This table has always been "
+            "final-only, so the upstream policy has changed. The value is kept, but a "
+            "preliminary reading is drawn from a smaller sample (~420 interviews "
+            "against ~1,000) and moves by one to two index points at the final -- it "
+            "should be labelled on the chart before it is trusted."
         )
     print(f"  . {name:<16} {kept:>4} months, {out[0]['survey_date']} .. {out[-1]['survey_date']}")
     return pd.DataFrame.from_records(out).set_index("survey_date")
@@ -226,7 +247,74 @@ def fetch(since: str | None = None) -> pd.DataFrame:
         f"  . joined {len(frame)} months, {frame['survey_date'].iloc[0]} .. "
         f"{frame['survey_date'].iloc[-1]}"
     )
+    _report_revisions(frame)
     return frame
+
+
+def _report_revisions(fresh: pd.DataFrame) -> None:
+    """Name every HISTORICAL cell whose value changed since the last pull.
+
+    UMich revises published aggregates and does not mark the affected months in the
+    file: a weighting error moved November 2022 through September 2023 (corrected
+    October 2023) and another moved January 2025 (corrected February 2025). Their own
+    revision changelog admits it "may not be comprehensive" before March 2026, so the
+    file is the only reliable witness.
+
+    The upsert handles revisions correctly -- keyed on survey_date, so a revision
+    overwrites rather than duplicating -- but it reports only a COUNT of revisited
+    rows, and on a full-refresh source that count is every row every time. It
+    therefore cannot distinguish "nothing moved" from "four years of history moved",
+    which is the distinction that matters. Read-only, and deliberately never raises:
+    a revision is legitimate upstream behaviour, and the point is only that it stops
+    being invisible.
+    """
+    if not store.exists("umich_sca"):
+        print("  . first pull -- nothing to compare against")
+        return
+
+    old = store.read("umich_sca")
+    if old.empty:
+        return
+
+    cols = [c for c in fresh.columns if c not in ("survey_date", "year")]
+    before = old.set_index("survey_date")
+    after = fresh.set_index("survey_date")
+    shared = before.index.intersection(after.index)
+    newest = after.index.max()
+
+    changed = []
+    for col in cols:
+        if col not in before.columns:
+            print(f"  ! NEW COLUMN {col!r} -- upstream added a series")
+            continue
+        a = pd.to_numeric(before.loc[shared, col], errors="coerce")
+        b = pd.to_numeric(after.loc[shared, col], errors="coerce")
+        # Tolerance, because the stored copy is float32 (lib.store downcasts) and
+        # comparing it to a freshly parsed float64 otherwise reports every cell as
+        # revised. 5e-3 is far below the one-decimal precision UMich publishes, so
+        # a real revision cannot hide underneath it.
+        moved = (a - b).abs() > 5e-3
+        # A value appearing where there was none, or vanishing, is also a revision.
+        moved |= a.isna() != b.isna()
+        for month in shared[moved.fillna(False)]:
+            changed.append((month, col, a.get(month), b.get(month)))
+
+    historical = [c for c in changed if c[0] != newest]
+    preliminary = [c for c in changed if c[0] == newest]
+
+    for month, col, was, now in preliminary:
+        print(f"  . {month} {col}: {was} -> {now}  (newest month)")
+    if historical:
+        print(f"  ! {len(historical)} HISTORICAL cells revised upstream:")
+        for month, col, was, now in historical[:20]:
+            print(f"      {month} {col}: {was} -> {now}")
+        if len(historical) > 20:
+            print(f"      ... and {len(historical) - 20} more")
+        print("    UMich revises aggregates without flagging the months. This is not "
+              "an error, but if it is unexpected, check their Data Updates and "
+              "Revisions notice before trusting a rank computed over the change.")
+    elif not preliminary:
+        print("  . no revisions to already-stored months")
 
 
 SOURCE_KWARGS = dict(
@@ -249,9 +337,10 @@ SOURCE_KWARGS = dict(
     ),
     group="Inflation & the consumer",
     cadence=(
-        "Monthly. Preliminary reading mid-month, final at month end, 10:00 ET. "
-        "The table carries whichever is current, so the preliminary value is "
-        "revised in place."
+        "Monthly, 10:00 ET. These tables carry FINAL readings only -- the mid-month "
+        "preliminary appears in the separate 'Current' tables, marked '(P)', and is "
+        "not ingested here. A month therefore appears about two weeks after the "
+        "preliminary that previewed it."
     ),
     # The files carry full history every time, so a missed run costs nothing.
     backfillable=True,
@@ -292,8 +381,19 @@ SOURCE_KWARGS = dict(
         "cumulative five-year change.",
         "The 5-to-10-year question was not always asked -- 105 early months are "
         "blank -- so the long-run series starts later than the year-ahead one.",
-        "The newest month may be the PRELIMINARY reading and can be revised at the "
-        "final release. The ingest re-pulls full history and overwrites by survey "
-        "month, so a revision replaces rather than duplicates.",
+        "MODE CHANGE, APRIL-JULY 2024. Collection moved from cell-phone RDD to "
+        "address-based web. UMich measured the resulting level shift at -6.6 index "
+        "points for sentiment and -13.6 for current conditions, and deliberately did "
+        "not adjust the series -- they spread it over four months so no single month "
+        "shows a step. So the level line has no visible break and is fine to read, "
+        "but a rank across the boundary is not: ranks here are computed within the "
+        "web era only, the three blended months are excluded, and month-over-month "
+        "changes from March to July 2024 embed the method effect rather than news.",
+        "Published values are revised without being flagged in the file -- a "
+        "weighting error moved November 2022 to September 2023, and another moved "
+        "January 2025. The ingest re-pulls full history and overwrites by survey "
+        "month, and prints any historical cell that changed, so a revision is "
+        "visible rather than silent.",
+        "Not seasonally adjusted. UMich's index calculation has no seasonal step.",
     ),
 )
