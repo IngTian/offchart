@@ -134,21 +134,23 @@ def png_config(filename: str, scale: int = 3) -> dict:
     return cfg
 
 
-def _ordinal(p: float | None) -> str:
-    """A percentile as an ordinal: 40.2 -> '40th', 1.4 -> '1st', NaN -> em dash.
+def ordinal_parts(p: float | None) -> tuple[str, str]:
+    """A percentile split into (number, suffix): 40.2 -> ('40', 'th').
 
-    Rounded with the SAME format string the hero text uses (`:.0f`), because the
-    bubble and the sentence above the chart print the same number and reading
-    "40th" beside "41st percentile" would look like two different statistics.
-    That inherits banker's rounding at exactly .5, which is a price worth paying
-    for the two agreeing.
+    Two renderings, ONE rule. The bubble on the chart joins the pair; the hero
+    sentence above the chart sets the suffix in a smaller face and so needs them
+    apart. Before this existed the hero built its own ordinal by concatenating a
+    hardcoded "th", which printed "53th" beside a bubble reading "53rd" -- the
+    same statistic contradicting itself on one screen, which invites a reader to
+    distrust both numbers rather than one. It also used `:.0f`, inheriting the
+    rounding this function exists to avoid.
 
-    An em dash for a missing rank rather than 'nan': a percentile is genuinely
-    blank during a series' warm-up (the first observation is the max of a
+    A missing rank returns ('—', ''), not 'nan': a percentile is genuinely blank
+    during a series' warm-up (the first observation is the maximum of a
     one-element set), and 'nanth' next to a real figure reads as a bug.
     """
     if p is None or pd.isna(p):
-        return "—"
+        return "—", ""
     v = float(p)
     # FLOOR, not round-to-nearest, and 100 reserved for exactly 100.
     #
@@ -163,7 +165,12 @@ def _ordinal(p: float | None) -> str:
         "th" if n % 100 in (11, 12, 13)
         else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
     )
-    return f"{n}{suffix}"
+    return str(n), suffix
+
+
+def _ordinal(p: float | None) -> str:
+    """A percentile as one ordinal string: 40.2 -> '40th', NaN -> em dash."""
+    return "".join(ordinal_parts(p))
 
 
 def _align_pctile(pct: pd.Series | None, index: pd.Index) -> pd.Series | None:
@@ -834,6 +841,312 @@ def spotlight(
         )
 
     fig.update_layout(**layout)
+    return fig
+
+
+@dataclass
+class Line:
+    """One line on a track."""
+
+    values: pd.Series
+    label: str
+    color: str | None = None
+    dash: str | None = None
+    fill: bool = False
+    #: Decimals in the tooltip.
+    decimals: int = 1
+    #: Unit suffix in the tooltip, e.g. "%".
+    suffix: str = ""
+    #: Causal percentile of `values`, ALREADY restricted to the pool this series
+    #: may be ranked within. tracks() does not decide that -- it cannot know that a
+    #: survey changed instrument in 2024 -- so a caller that hands over an
+    #: unrestricted rank gets a wrong bubble and this is the seam where that
+    #: happens. See lib/umich_spec.rank_pool.
+    pctile: pd.Series | None = None
+
+
+@dataclass
+class Track:
+    """One panel: a set of lines sharing a unit and a y-axis."""
+
+    lines: list[Line]
+    unit: str
+    #: Relative height. The panel a reader orients by should get the most.
+    weight: float = 1.0
+    #: Draw the baseline at zero. For a quantity that can change sign, which side
+    #: of zero you are on is the first thing to read.
+    zero_line: bool = False
+    #: Dotted horizontal reference levels.
+    guides: tuple[float, ...] = ()
+    #: Keep zero inside the range even when the data does not reach it.
+    include_zero: bool = False
+
+
+def tracks(
+    panels: list[Track],
+    *,
+    height: int = 620,
+    gap: float = 0.09,
+) -> go.Figure:
+    """Stacked line panels in the spotlight visual language.
+
+    WHY THIS IS NOT stacked() AND NOT spotlight()
+
+    stacked() is the original builder and it is what made the first version of this
+    board read like a slide deck: a title per subplot, a legend row, and axis
+    furniture sized for a presentation. spotlight() replaced it for the positioning
+    board and is the look that survived review -- but spotlight is specialised down
+    to its bones, taking a net share, an open-interest series and a price, because
+    the rule that open interest must be on screen beside a share of it is baked in.
+
+    tracks() is that same look, generalised to "N panels of lines". It shares
+    spotlight's whole approach and for the same reasons, so the two stay consistent:
+
+      ONE X-AXIS, SEVERAL Y-AXIS DOMAINS, not make_subplots. make_subplots gives
+      each panel its own x-axis and links them with `matches`; linked axes zoom
+      together but remain separate HOVER targets, so the crosshair draws only
+      inside the panel the pointer is in and the tooltip lists only that panel's
+      series. Reading one panel against another then means hovering twice and
+      holding the date in your head.
+
+      THE DRAWN LINES CARRY NO HOVER. plotly builds one unified label per (x, y)
+      subplot, so lines on three y-axes give three tooltips no matter how the axes
+      are wired. Instead they are hover-silent and one invisible trace per axis
+      carries every value for the hovered date in customdata, in the order the
+      lines were declared. lib/overlay.crosshair reads those slots.
+
+      AN EXPLICIT X RANGE. A one-point marker trace (the rank bubble) has zero span
+      and plotly pads a zero-span trace by a fraction of the axis length in PIXELS,
+      which over decades of data is most of a year. Left to autorange the axis ends
+      well past the last observation, and since the range buttons are
+      stepmode="backward" they then resolve to windows ending in the future.
+
+    Legend only where a panel has more than one line: a legend box for a single
+    series is ink doing no work, and the axis title already names it.
+    """
+    panels = [p for p in panels if p.lines and any(len(l.values) for l in p.lines)]
+    if not panels:
+        raise ValueError("tracks() needs at least one panel with at least one line")
+
+    # Domains top-down, tallest weight getting the most room. Gaps between panels
+    # are what separate them; there are no boxes and no subplot titles.
+    total = sum(p.weight for p in panels)
+    usable = 1.0 - gap * (len(panels) - 1)
+    domains, cursor = [], 1.0
+    for p in panels:
+        span = usable * p.weight / total
+        domains.append((max(0.0, cursor - span), cursor))
+        cursor -= span + gap
+
+    x_union = None
+    for p in panels:
+        for line in p.lines:
+            idx = line.values.index
+            x_union = idx if x_union is None else x_union.union(idx)
+    x_first, x_last = x_union.min(), x_union.max()
+    x_span_days = max(int((x_last - x_first).days), 1)
+
+    axis_font = dict(size=12, color=MUTED)
+    tick_font = dict(size=11.5, color=MUTED)
+    fig = go.Figure()
+
+    shapes, annotations = [], []
+    layout_axes: dict[str, dict] = {}
+    # Pills are placed in DATA coordinates, so two series that happen to end near
+    # each other put their labels on top of one another -- expected inflation
+    # finishing at 4.0% and 3.3% stacked two boxes into the same 30 pixels, which
+    # reads as one duplicated label rather than two series. Collected per panel and
+    # nudged apart below, once the panel's own span is known.
+    pills_by_panel: dict[int, list[dict]] = {}
+
+    for n, (panel, domain) in enumerate(zip(panels, domains), start=1):
+        axis = "y" if n == 1 else f"y{n}"
+        axis_key = "yaxis" if n == 1 else f"yaxis{n}"
+        multi = len(panel.lines) > 1
+
+        for slot, line in enumerate(panel.lines):
+            colour = line.color or SERIES_COLORS[slot % len(SERIES_COLORS)]
+            fig.add_trace(
+                go.Scatter(
+                    x=line.values.index,
+                    y=line.values.to_numpy(),
+                    mode="lines",
+                    line=dict(color=colour, width=2 if slot == 0 else 1.7,
+                              dash=line.dash),
+                    fill="tozeroy" if line.fill else None,
+                    fillcolor=ACCENT_FILL if line.fill else None,
+                    connectgaps=False,  # a gap in the data must look like a gap
+                    hoverinfo="skip",
+                    name=line.label,
+                    yaxis=axis,
+                    showlegend=multi,
+                    legendgroup=f"panel{n}",
+                )
+            )
+
+            # The rank bubble, on the last observation that has a rank.
+            # _align_pctile returns None for "nothing to draw" and _endpoint
+            # requires a series of matching length, so the None has to be caught
+            # here rather than passed through.
+            aligned = _align_pctile(line.pctile, line.values.index)
+            if aligned is not None:
+                end = _endpoint(line.values, aligned)
+                if end is not None:
+                    at, y, p = end
+                    fig.add_trace(
+                        go.Scatter(
+                            x=[at], y=[y], mode="markers",
+                            marker=dict(size=8, color=colour,
+                                        line=dict(color=SURFACE, width=1.6)),
+                            cliponaxis=False,
+                            hoverinfo="skip",
+                            name="", yaxis=axis, showlegend=False,
+                        )
+                    )
+                    pill = dict(
+                        # Paper x, not the observation's date: an annotation on a
+                        # data axis expands that axis's autorange to contain its
+                        # pixel box, which pushed the x range months past the
+                        # last reading. Same place on screen, no axis effect.
+                        xref="paper", yref=axis, x=1, y=y,
+                        text=f"<b>{_ordinal(p)}</b>",
+                        showarrow=False, xanchor="left", xshift=9,
+                        yanchor="middle",
+                        font=dict(family=FONT, size=11.5, color=colour),
+                        bgcolor=theme.c("chip"),
+                        bordercolor=theme.c("baseline"),
+                        borderwidth=1, borderpad=3,
+                    )
+                    annotations.append(pill)
+                    pills_by_panel.setdefault(n, []).append(pill)
+
+        if panel.zero_line:
+            shapes.append(
+                dict(type="line", xref="paper", x0=0, x1=1, yref=axis, y0=0, y1=0,
+                     line=dict(color=BASELINE, width=1.2), layer="below")
+            )
+        for g in panel.guides:
+            shapes.append(
+                dict(type="line", xref="paper", x0=0, x1=1, yref=axis, y0=g, y1=g,
+                     line=dict(color=MUTED, width=1, dash="dot"), layer="below")
+            )
+
+        layout_axes[axis_key] = dict(
+            domain=domain,
+            # Every y axis anchors to the ONE x axis, and the x axis anchors to the
+            # BOTTOM panel (set below). That is what puts a single tick band under
+            # the whole stack instead of one per panel.
+            anchor="x",
+            title=dict(text=panel.unit, font=axis_font),
+            gridcolor=GRID,
+            zeroline=False,
+            showline=False,
+            ticks="",
+            tickfont=tick_font,
+            **({"rangemode": "tozero"} if panel.include_zero else {}),
+        )
+
+    # NUDGE COLLIDING PILLS APART, in pixels, per panel.
+    #
+    # Proximity is judged in DATA space against the panel's own span, because the
+    # final y range is not known here -- the browser rescales it per zoom (see
+    # lib/overlay) -- but any rescale is monotone, so "these two endpoints are close
+    # relative to the span" survives it. A pill box is about 26px tall in a panel of
+    # roughly 250, so 10% of the span is the threshold at which they touch.
+    PILL_PX = 14
+    for index, pills in pills_by_panel.items():
+        if len(pills) < 2:
+            continue
+        panel = panels[index - 1]
+        values = pd.concat([line.values.dropna() for line in panel.lines])
+        span = float(values.max() - values.min()) or 1.0
+        # Highest first, so the nudge always pushes downward and the topmost pill
+        # keeps the position that actually marks its line.
+        ordered = sorted(pills, key=lambda a: -float(a["y"]))
+        shift = 0.0
+        for above, below in zip(ordered, ordered[1:]):
+            if abs(float(above["y"]) - float(below["y"])) < 0.10 * span:
+                shift -= PILL_PX
+                below["yshift"] = shift
+            else:
+                shift = 0.0
+
+    # ONE HOVER TRACE PER AXIS, each carrying EVERY panel's values, so the tooltip
+    # is identical wherever the pointer sits. Slots run panel by panel in
+    # declaration order and the caller's overlay.Row spec has to agree with that.
+    all_lines = [line for panel in panels for line in panel.lines]
+    grid = x_union
+    columns = [line.values.reindex(grid).to_numpy() for line in all_lines]
+    customdata = list(zip(*columns)) if columns else []
+    template = "<br>".join(
+        f"{line.label}  <b>%{{customdata[{i}]:,.{line.decimals}f}}</b>{line.suffix}"
+        for i, line in enumerate(all_lines)
+    ) + "<extra></extra>"
+
+    for n in range(1, len(panels) + 1):
+        axis = "y" if n == 1 else f"y{n}"
+        first = panels[n - 1].lines[0]
+        fig.add_trace(
+            go.Scatter(
+                x=grid,
+                y=first.values.reindex(grid).to_numpy(),
+                mode="lines",
+                line=dict(width=0, color="rgba(0,0,0,0)"),
+                customdata=customdata,
+                hovertemplate=template,
+                name="", yaxis=axis, showlegend=False,
+            )
+        )
+
+    fig.update_layout(
+        height=height,
+        margin=dict(l=64, r=60 if annotations else 24, t=48, b=48),
+        annotations=annotations,
+        shapes=shapes,
+        paper_bgcolor=SURFACE,
+        plot_bgcolor=SURFACE,
+        font=dict(family=FONT, size=12, color=INK_SECONDARY),
+        hovermode="x unified",
+        hoverlabel=dict(
+            bgcolor=theme.c("chip"),
+            bordercolor=theme.c("baseline"),
+            font=dict(family=FONT, size=12.5, color=INK),
+            align="left",
+        ),
+        modebar=dict(bgcolor="rgba(0,0,0,0)", color=theme.c("faint"),
+                     activecolor=ACCENT_LINE),
+        dragmode=False,
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+            bgcolor="rgba(0,0,0,0)", font=dict(size=11.5, color=MUTED),
+        ),
+        xaxis=dict(
+            domain=(0.0, 1.0),
+            anchor="y" if len(panels) == 1 else f"y{len(panels)}",
+            showgrid=False,
+            showline=True,
+            linecolor=BASELINE,
+            linewidth=1,
+            ticks="",
+            tickfont=tick_font,
+            showspikes=True,
+            spikemode="across",
+            spikethickness=1,
+            spikecolor=MUTED,
+            spikedash="solid",
+            range=[x_first, x_last],
+            rangeselector=dict(
+                buttons=range_buttons(x_span_days),
+                bgcolor=theme.c("chip"),
+                activecolor=ACCENT_FILL,
+                bordercolor=theme.c("baseline"),
+                borderwidth=1,
+                font=dict(family=FONT, size=11.5, color=INK_SECONDARY),
+                x=0, xanchor="left", y=1.0, yanchor="bottom",
+            ),
+        ),
+        **layout_axes,
+    )
     return fig
 
 
