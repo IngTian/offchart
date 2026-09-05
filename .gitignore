@@ -27,19 +27,20 @@ data/umich_sca.parquet
 # git history: `git show 42aa2dd:panels/_parked/screen.py` recovers any of them.
 .parked/
 
-# Claude Code's working directory. Ignored SELECTIVELY rather than as a whole,
-# because the two things in it are ignorable for opposite reasons and a blanket
-# `.claude/` would also pre-emptively exclude shared project config
-# (.claude/settings.json, .claude/skills/) that IS worth committing if it is ever
-# added.
+# Claude Code's working directory: ignore everything in it EXCEPT the settings we
+# want shared.
 #
-# worktrees/ is the one that matters: `git worktree add` puts linked checkouts here,
-# each a full copy of the tree including data/. Currently 118 MB. Each also contains
-# a `.git` FILE, so git sees a nested repository and `git add -A` either warns or
-# writes a gitlink -- neither is wanted, and both are confusing to undo.
+# The pattern is `.claude/*` and NOT `.claude/`, and that is load-bearing rather
+# than stylistic. Git will not re-include a file whose parent directory has been
+# excluded by a directory pattern -- it never descends into an excluded directory to
+# find the exception. So `.claude/` followed by `!.claude/settings.local.json`
+# silently does nothing and the file stays ignored while the .gitignore reads as
+# though it were tracked. Excluding the CONTENTS (`.claude/*`) leaves the directory
+# itself visible, which is what makes the negation bite.
 #
-# settings.local.json is machine-local by construction; that is what the `.local.`
-# infix means. Nothing secret in it today (a permission allowlist), but it is
-# per-developer state and does not belong to anyone else.
-.claude/worktrees/
-.claude/settings.local.json
+# What the blanket rule is really for is worktrees/: `git worktree add` puts linked
+# checkouts there, each a full copy of the tree including data/, 118 MB at the time
+# of writing. Each also contains a `.git` FILE, so git sees a nested repository and
+# `git add -A` either warns and skips or writes a gitlink -- both awkward to undo.
+.claude/*
+!.claude/settings.local.json
