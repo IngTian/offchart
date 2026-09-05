@@ -80,6 +80,7 @@ Total on disk is ~0.5 MB.
 """
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -148,6 +149,70 @@ def _slice(source_id: str, windows: dict[str, tuple[str | None, str | None]] | N
     return out.astype({c: "object" for c in cats})
 
 
+def _umich_fabricated() -> pd.DataFrame:
+    """umich_sca is FABRICATED, not sliced, and that is the point.
+
+    Every other fixture here is a window cut out of data/. This one cannot be: the
+    University of Michigan permits use of its public tables but not redistribution,
+    which is why data/umich_sca.parquet is gitignored (see sources/umich). Copying
+    even a few hundred of their values into a committed fixture would be exactly the
+    redistribution the gitignore exists to avoid.
+
+    Fabricating instead costs nothing and buys something: the shape can be built to
+    contain every edge the panel has to survive, rather than whatever the real file
+    happens to hold this month.
+
+      * a sparse pre-1978 era (quarterly), so gap rendering is exercised
+      * monthly from 1978, so the cadence break is real
+      * infl_exp_5y10y blank before 1990-04, as upstream
+      * the three 2024 blend months present, so the panel must exclude them
+      * a web era of 26 months -- shorter than MIN_RANK_OBSERVATIONS -- so the
+        suppressed-rank path is the one under test, which is the live case
+      * inflation pools long enough to clear the threshold, so the bubble path is
+        under test too
+
+    Deterministic arithmetic, no RNG: a fixture that changes between rebuilds turns
+    an unrelated failure into a hunt.
+    """
+    from lib import umich_spec
+
+    quarterly = pd.date_range("1970-02-01", "1977-11-01", freq="QS-FEB")
+    monthly = pd.date_range("1978-01-01", "2026-08-01", freq="MS")
+    months = quarterly.union(monthly)
+
+    web_start = pd.Timestamp(umich_spec.WEB_ERA_START)
+    blend = {pd.Timestamp(m) for m in umich_spec.BLEND_MONTHS}
+
+    rows = []
+    for i, when in enumerate(months):
+        # A slow wave plus a shorter one: no RNG, but not a straight line either, so
+        # a percentile computed over it is not degenerate.
+        wave = 12.0 * math.sin(i / 19.0) + 5.0 * math.cos(i / 4.0)
+        # The mode shift UMich measured, applied from the web era onward so the
+        # fixture reproduces the trap the panel exists to avoid.
+        shift = -6.6 if when >= web_start else 0.0
+        if when in blend:
+            shift = -3.3  # part way through the four-month blend
+        rows.append(
+            {
+                "survey_date": when.strftime("%Y-%m-01"),
+                "year": int(when.year),
+                "sentiment": round(85.0 + wave + shift, 1),
+                "current_conditions": round(90.0 + wave * 1.1 + shift * 2.0, 1),
+                "expectations": round(80.0 + wave * 0.9 + shift * 0.3, 1),
+                "infl_exp_1y": (
+                    None if when < pd.Timestamp("1978-01-01")
+                    else round(3.2 + 1.4 * math.sin(i / 11.0), 1)
+                ),
+                "infl_exp_5y10y": (
+                    None if when < pd.Timestamp("1990-04-01")
+                    else round(2.9 + 0.8 * math.sin(i / 23.0), 1)
+                ),
+            }
+        )
+    return pd.DataFrame.from_records(rows)
+
+
 def build() -> list[dict]:
     reports = []
     for source_id, windows in SELECTION.items():
@@ -156,6 +221,12 @@ def build() -> list[dict]:
         target = FIXTURE_DIR / f"{source_id}.parquet"
         target.unlink(missing_ok=True)  # full rewrite: a dropped code must vanish
         reports.append(store.upsert(source_id, frame, src.key, sort_key=src.sort_key))
+
+    src = sources.get("umich_sca")
+    (FIXTURE_DIR / "umich_sca.parquet").unlink(missing_ok=True)
+    reports.append(
+        store.upsert("umich_sca", _umich_fabricated(), src.key, sort_key=src.sort_key)
+    )
     return reports
 
 

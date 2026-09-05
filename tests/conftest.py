@@ -55,7 +55,7 @@ CFTC_SOURCES: tuple[str, ...] = (
 )
 
 #: Every source present in the slice, so `fixture_data_dir` can stand in for data/.
-FIXTURE_SOURCES: tuple[str, ...] = CFTC_SOURCES + ("openrouter_pricing",)
+FIXTURE_SOURCES: tuple[str, ...] = CFTC_SOURCES + ("openrouter_pricing", "umich_sca")
 
 #: Codes whose presence specific tests depend on. Named here so a fixture
 #: rebuild that drops one fails with this list rather than with an empty frame.

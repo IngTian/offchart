@@ -57,11 +57,47 @@ class Source:
     #: Grouping for the sidebar, e.g. "CFTC positioning".
     group: str = "Other"
 
+    #: WHAT THE UPSTREAM ALLOWS. Not decoration -- `redistributable` decides
+    #: whether this source's parquet may be committed, and that is enforced by a
+    #: test rather than left to whoever adds the next source.
+    #:
+    #: Every source in this repo up to now has been US federal work (CFTC) or an
+    #: openly published API, so "commit the data" was free and the question never
+    #: came up. It is not free in general: the University of Michigan asserts
+    #: copyright over the Surveys of Consumers tables, grants permission-free USE
+    #: of the public ones, and separately prohibits redistribution without written
+    #: consent. Those two grants are in tension, and the honest reading is that
+    #: charting is allowed and mirroring is not. A source that is not
+    #: redistributable therefore ingests to a gitignored parquet: the board still
+    #: only ever reads from disk, but a fresh clone has to fetch for itself.
+    license: str = "unspecified"
+
+    #: False -> data/<id>.parquet must be gitignored. See license above.
+    redistributable: bool = True
+
+    #: Attribution the upstream requires, verbatim. Rendered next to the charts.
+    citation: str = ""
+
     def __post_init__(self) -> None:
         if not self.key:
             raise ValueError(f"source {self.id!r} must declare a dedupe key")
         if not self.sort_key:
             raise ValueError(f"source {self.id!r} must declare a sort key")
+        # A source we may not mirror is one whose terms we have had to read, so
+        # there is no excuse for not recording them -- and the UI cannot attribute
+        # what it was not told. Fail at import, where it is unmissable.
+        if not self.redistributable:
+            if self.license == "unspecified":
+                raise ValueError(
+                    f"source {self.id!r} is marked not redistributable but declares no "
+                    "license. Record the terms that led to that decision."
+                )
+            if not self.citation:
+                raise ValueError(
+                    f"source {self.id!r} may not be redistributed, which means the "
+                    "upstream is asserting rights, which means it almost certainly "
+                    "requires attribution. Declare `citation`."
+                )
         # The whole git-churn argument depends on this, so assert it rather than
         # trusting that nobody reorders the tuple later.
         lead = self.sort_key[0]
