@@ -32,12 +32,22 @@ from lib.ui import caveat_block, freshness  # noqa: F401  -- re-exported for con
 from sources import IMPORT_ERRORS as SOURCE_IMPORT_ERRORS
 from sources import all_sources
 
+
+def all_sources_by_id() -> dict:
+    return {s.id: s for s in all_sources()}
+
+
+# Discovered BEFORE set_page_config, because the sidebar's initial state depends on
+# how many boards there are. With one board the sidebar holds nothing and starts
+# collapsed; with two or more it is the only way to reach the second one, and a
+# collapsed sidebar hides that there is a second one at all.
+BOARDS = panels.all_boards()
+
 st.set_page_config(
     page_title="Watchboard", page_icon="◧", layout="centered",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded" if len(BOARDS) > 1 else "collapsed",
 )
 
-BOARDS = panels.all_boards()
 T = theme.ACTIVE
 
 # Chrome off, type and spacing set once. Streamlit's defaults are what make a
@@ -221,8 +231,10 @@ _broken_module_warnings()
 board = _pick_board()
 
 st.markdown(
+    # Deliberately not "CFTC ...": there is more than one source now, and a
+    # masthead that names only the first one makes the others look like guests.
     '<div class="masthead"><div class="mark">◧ Watchboard</div>'
-    "<div class=\"sub\">CFTC Commitments of Traders, straight from the primary "
+    "<div class=\"sub\">Positioning and expectations, straight from the primary "
     "source. A number you cannot reproduce yourself can raise a question; it "
     "should not answer one.</div></div>",
     unsafe_allow_html=True,
@@ -235,10 +247,28 @@ else:
         sid for sid in board.sources if (cache.file_stats(sid) or {}).get("rows", 0) == 0
     ]
     if missing:
+        # A source we may not redistribute is GITIGNORED, so "not ingested" is the
+        # normal state of a fresh clone rather than a mistake, and the notice has to
+        # say so or it reads as a broken repo. See sources/base.redistributable.
+        restricted = []
+        for sid in missing:
+            try:
+                src = all_sources_by_id()[sid]
+            except KeyError:
+                continue
+            if not src.redistributable:
+                restricted.append((sid, src.citation))
         st.info(
             "Not ingested yet: " + ", ".join(f"`{m}`" for m in missing)
-            + ". Run `python -m scripts.ingest --backfill` (first run pulls full "
-            "history and takes a few minutes)."
+            + ". Run `python -m scripts.ingest"
+            + (f" --source {missing[0]}" if len(missing) == 1 else " --backfill")
+            + "`."
         )
+        for sid, citation in restricted:
+            st.caption(
+                f"`{sid}` is deliberately not committed: its terms permit use but "
+                f"not redistribution, so the data is fetched rather than shipped. "
+                f"Source: {citation}."
+            )
     else:
         board.render()

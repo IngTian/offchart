@@ -192,6 +192,34 @@ def test_caveats_state_the_two_things_most_likely_to_mislead() -> None:
     assert "-6.6" in blob or "6.6" in blob, "the measured mode-change shift must be stated"
 
 
+# ------------------------------------------------------------ board separation
+
+def test_the_michigan_board_is_standalone_and_carries_no_cftc_data() -> None:
+    """The survey is not futures positioning and must not be mixed into that view.
+
+    Asserted rather than left to care, because the cheapest way to "add a source" is
+    to hang it off the board that already exists, and that would put a monthly
+    household survey on an axis beside weekly trader positions.
+    """
+    import panels
+
+    boards = {b.id: b for b in panels.all_boards()}
+    assert "inflation" in boards, "the Michigan board must be its own board"
+
+    inflation = set(boards["inflation"].sources)
+    positioning = set(boards["positioning"].sources)
+    assert inflation == {"umich_sca"}
+    assert not (positioning & inflation), "the two boards must share no source"
+    assert not any(s.startswith("cftc") for s in inflation)
+    assert "umich" not in " ".join(positioning)
+    assert boards["inflation"].group != boards["positioning"].group, (
+        "they belong in different sidebar groups; they answer different questions"
+    )
+
+    src = (ROOT / "panels" / "inflation.py").read_text().lower()
+    assert "cftc" not in src, "the Michigan board must not reach for CFTC data"
+
+
 # ------------------------------------------------ against the real file, if present
 
 @pytest.mark.skipif(
