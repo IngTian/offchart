@@ -171,6 +171,19 @@ def main() -> int:
             targets = [get(args.source)]
         results = [run_one(con, s, backfill=args.backfill) for s in targets]
         con.commit()
+        # Leave the file serve-ready, exactly as scripts/build does.
+        #
+        # db.connect puts the file in WAL for the write, and WAL is right for writing.
+        # But a WAL-mode database bind-mounted into the Grafana container makes
+        # concurrent panel queries lose a lock race (SQLITE_BUSY -> an empty panel
+        # beside two full ones), so somebody has to switch it back, and until now only
+        # the builder did. That was fine for `make pull`, which runs both -- and wrong
+        # for anyone who ran an ingest on its own, which left the database in WAL with
+        # no warning and broke Grafana until the next build. Measured on a live board.
+        #
+        # The rule is now the simple one: every writer in this repo hands the file back
+        # in the mode Grafana can read.
+        db.finalize_for_serving(con)
     finally:
         con.close()
 

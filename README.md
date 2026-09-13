@@ -13,7 +13,7 @@ out to cost more than the data ever did, and Grafana already does crosshairs, zo
 fullscreen and export better than a bespoke one will.
 
 ```
-make venv        # once: .venv + two dependencies
+make conda-env   # once: a conda env with the two dependencies (or `make venv`)
 make backfill    # once: full history into data/offchart.sqlite (~5 min, ~900 MB fetched)
 make grafana     # start Grafana -> http://localhost:3000
 make pull        # from then on, the only command you need
@@ -69,8 +69,29 @@ for the suite. Everything else — SQLite, HTTP — is standard library.
 ```
 git clone https://github.com/IngTian/offchart.git
 cd offchart
-make venv
+
+make conda-env               # conda env named "offchart", from conda-forge
+conda activate offchart
+
+# or, if you'd rather not use conda:
+make venv && . .venv/bin/activate
 ```
+
+Either is fine — nothing here has a compiled extension or a C library, so both
+dependencies are pure wheels installed from `requirements.txt` in both paths.
+`make conda-env` pins `-c conda-forge --override-channels`, which keeps it clear of
+Anaconda's `defaults` channels: a fresh conda refuses to create anything until their
+Terms of Service are accepted, and those terms carry commercial-use conditions that
+conda-forge does not.
+
+Every target runs through `$(PYTHON)`, resolved in this order: an **activated**
+environment (`$VIRTUAL_ENV`, then `$CONDA_PREFIX`), then a `.venv/` directory in the
+tree, then whatever `python3` is on `PATH`. Activation beats a directory on purpose — a
+leftover `.venv/` is not a statement of intent, and having it win is how a suite ends up
+passing against an environment you thought you'd left behind. `make which-python` prints
+the choice and the reason for it, which is the first thing to check when the suite
+behaves differently in two shells. Override any time with
+`make test PYTHON=/path/to/python`.
 
 ## 2. Get the data
 
@@ -173,6 +194,7 @@ Use `make backfill` after changing a field map or widening the market universe.
 ```
 make status          what is in the database and how stale it is
 make build           rebuild the derived tables only, no network
+make which-python    which interpreter make will use, and why
 make test            the suite: 357 tests, no network, ~1s
 make verify          prove the CFTC field maps against the live API
 make grafana-stop    stop Grafana
@@ -181,6 +203,11 @@ make fixtures        regenerate the committed test slice from your store
 make compact         VACUUM
 make reset-db        delete the database (needs CONFIRM=1; recovery is one backfill)
 ```
+
+There is also a bare `make ingest`, which is the fetch half of `make pull` without the
+rebuild. It is useful for debugging one source and it is not in `make help`, because
+running it alone leaves Grafana showing the previous week's derived numbers — so it
+prints a reminder to run `make build` rather than letting you discover that from a chart.
 
 ## 6. Querying it yourself
 
