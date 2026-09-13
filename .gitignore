@@ -22,6 +22,20 @@ venv/
 # ignored. Adding the flag without the line fails the suite, and vice versa.
 data/umich_sca.parquet
 
+# The SQLite store (lib/db). Deliberately NOT committed, for two reasons.
+#
+# It contains umich_sca, which is licensed for use and not redistribution -- the same
+# rule as the line above, and tests/test_db.py asserts this one too.
+#
+# And it does not need committing: nine of the ten sources are backfillable, so losing
+# this file costs one `scripts/ingest --backfill`. The tenth, openrouter_pricing,
+# serves only "today" and its history is genuinely irreplaceable -- so it does NOT
+# live here. It lives in git as one immutable CSV per snapshot date under
+# data/snapshots/, which must stay committed.
+data/*.sqlite
+data/*.sqlite-wal
+data/*.sqlite-shm
+
 # Boards that were built and then set aside. Kept on disk so they are cheap to
 # revive, out of the tree so the repo shows only what ships. They are still in
 # git history: `git show 42aa2dd:panels/_parked/screen.py` recovers any of them.
