@@ -353,6 +353,74 @@ def crosshair(key: str, rows: list[Row]) -> None:
               }});
             }}
 
+            // ---- REPAIR THE GEOMETRY AFTER EXITING FULLSCREEN -------------------
+            // Leaving plotly's fullscreen leaves the figure DRAWN at fullscreen size
+            // inside a normal-size card. Measured: card 1022x760, _fullLayout
+            // 1022x760 -- restored correctly -- but the rendered box still 1022x1042
+            // and xaxis._length still 1858 against the 880 it should be. So the
+            // series is painted across 1858px inside an 880px viewport and you see
+            // the left half of it, with a panel pushed out of sight entirely.
+            //
+            // The cause is upstream, not here: with this whole overlay disabled the
+            // fault reproduces on every case, and Streamlit's component sits in a
+            // Plotly.react loop afterwards, re-reacting with the correct width and
+            // height while never recomputing the geometry they imply. What used to
+            // hide it was this file -- the y-rescale relayout happened to force a
+            // recompute whenever an xaxis event arrived, which is why the simple
+            // cases looked fine and the ones after a rerun or an in-fullscreen zoom
+            // did not. Depending on that was luck, so it is now explicit.
+            //
+            // Plotly.Plots.resize(gd) does NOT fix it -- tried, measured, no change.
+            // A relayout carrying width and height does, even though those values
+            // already match _fullLayout, because it forces the size recompute that
+            // react's diff skips.
+            function drift() {{
+              const fl = gd._fullLayout;
+              if (!fl || !fl.width || !fl.height) return null;
+              const box = gd.getBoundingClientRect();
+              if (!box.width || !box.height) return null;   // hidden, nothing to fix
+              if (Math.abs(box.width - fl.width) <= 1
+                  && Math.abs(box.height - fl.height) <= 1) return null;
+              // Target the CARD, which is the physical constraint Streamlit sets and
+              // which the restored _fullLayout already agrees with. The rendered box
+              // is the one that is lying.
+              const cb = card.getBoundingClientRect();
+              if (!cb.width || !cb.height) return null;
+              return {{width: Math.round(cb.width), height: Math.round(cb.height)}};
+            }}
+
+            let repairing = false, repairs = 0, repairTimer = null;
+            function repair() {{
+              // Debounced: entering and leaving fullscreen both pass through states
+              // where the box and the layout legitimately disagree for a frame, and
+              // correcting mid-transition would fight the transition.
+              if (repairTimer) W.clearTimeout(repairTimer);
+              repairTimer = W.setTimeout(() => {{
+                repairTimer = null;
+                if (repairing) return;
+                const target = drift();
+                if (!target) {{ repairs = 0; return; }}
+                // Never loop. If five corrections in a row have not settled it,
+                // something else is fighting us and a scrollbar is better than a
+                // spin.
+                if (repairs >= 5) return;
+                repairs += 1;
+                repairing = true;
+                Promise.resolve(W.Plotly.relayout(gd, target))
+                  .catch(() => {{}})
+                  .then(() => {{ repairing = false; }});
+              }}, 180);
+            }}
+
+            if (typeof W.ResizeObserver === 'function') {{
+              // Observe the FIGURE, not just the card. In the broken state the card
+              // never changes size at all -- it is 1022x760 throughout -- so a card
+              // observer alone sees nothing. The figure's own box is what moves.
+              const ro = new W.ResizeObserver(() => repair());
+              ro.observe(gd);
+              ro.observe(card);
+            }}
+
             // Normalise the FIRST paint through the same rule the buttons use, so
             // that the view on load and the view after clicking "All" are the same
             // picture rather than two nearly-identical ones -- and so the log tick
