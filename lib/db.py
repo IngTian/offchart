@@ -271,6 +271,25 @@ def read_frame(con: sqlite3.Connection, source_id: str,
     return frame[[c for c in like.columns if c in frame.columns]]
 
 
+def finalize_for_serving(con: sqlite3.Connection) -> str:
+    """Check-point the WAL and leave WAL mode. Call this when a build finishes.
+
+    NOT cosmetic, and the failure it prevents is one panel in three showing "No data".
+    Measured: with the file in WAL mode and bind-mounted into the Grafana container on
+    macOS, the three panels of a board query concurrently and one loses a lock race --
+    the plugin returns `database is locked (5) (SQLITE_BUSY)` and Grafana draws an
+    empty panel beside two full ones. In rollback-journal mode a reader does not need
+    to attach the -shm file at all, and the same three panels all return 200.
+
+    WAL is still right for WRITING: one writer and N readers is exactly what it is for,
+    and the build wants it. So the mode is a phase, not a setting -- WAL while building,
+    DELETE once the file is something Grafana reads.
+    """
+    con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    mode = con.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
+    return str(mode)
+
+
 def latest_date(con: sqlite3.Connection, source_id: str,
                 date_column: str = "report_date") -> str | None:
     """Most recent stored date, or None. Drives the incremental fetch floor.

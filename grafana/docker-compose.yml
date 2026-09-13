@@ -1,0 +1,30 @@
+# Grafana, provisioned entirely from files in this directory.
+#
+#     docker compose -f grafana/docker-compose.yml up -d
+#     open http://localhost:3000
+#
+# Stateless by design: no volume for Grafana's own database, because everything that
+# defines the boards -- the datasource, the dashboards -- is committed here and
+# reprovisioned on every start. Delete the container and nothing is lost. That is the
+# point of moving off a hand-maintained UI.
+#
+# The repo is mounted read-write rather than :ro. The plugin opens the database with
+# _pragma=query_only(1) so it cannot write, but SQLite still wants to place lock state
+# beside the file, and a read-only mount turns that into an error.
+services:
+  grafana:
+    image: grafana/grafana:12.3.1
+    container_name: wb-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      # Signed community plugin, pure Go, so it runs on the default Alpine image and
+      # needs no allow_loading_unsigned_plugins.
+      GF_PLUGINS_PREINSTALL: frser-sqlite-datasource
+      GF_PATHS_PROVISIONING: /repo/grafana/provisioning
+      # Single reader on a laptop. Turn this off before exposing the port anywhere.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ..:/repo

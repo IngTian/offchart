@@ -1,0 +1,19 @@
+# The watchboard database, provisioned from a file so the dashboard is reproducible
+# from a clone rather than clicked together.
+#
+# frser-sqlite-datasource, not a core source: Grafana's built-in SQL sources are
+# MSSQL, MySQL and PostgreSQL, all of which are servers. This one reads a file, which
+# is what keeps the whole system free of an always-on service. It is a signed
+# community plugin (pure Go via modernc.org/sqlite, so it runs on the default Alpine
+# image and needs no allow_loading_unsigned_plugins).
+apiVersion: 1
+
+datasources:
+  - name: watchboard
+    uid: watchboard
+    type: frser-sqlite-datasource
+    access: proxy
+    isDefault: true
+    jsonData:
+      # Path INSIDE the container. The repo is mounted at /repo.
+      path: /repo/data/watchboard.sqlite
