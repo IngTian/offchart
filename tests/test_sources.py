@@ -69,6 +69,61 @@ def test_the_database_is_gitignored() -> None:
     assert _is_ignored(rel), f"{rel} must be gitignored"
 
 
+#: Every script takes `--db` (scripts/ingest.py, scripts/build.py, scripts/status.py),
+#: so a store holding umich_sca can legitimately be written to any of these. The rule
+#: is about the SHAPE of a store path, not about one default: `data/*.sqlite` matched a
+#: single directory level and a single extension, and when this test was written six of
+#: the paths below were reported NOT ignored by git -- untracked-visible, taken by
+#: `git add -A`, and green under all 357 tests.
+_STORE_PATHS_THAT_MUST_BE_IGNORED = (
+    "data/offchart.sqlite",       # the default, already covered
+    "data/offchart.sqlite-wal",
+    "data/offchart.sqlite-shm",
+    "data/offchart.db",           # the same store under an ordinary extension
+    "data/offchart.sqlite3",
+    "data/scratch.sqlite",
+    "data/sub/offchart.sqlite",   # one level deeper than `data/*.sqlite` reaches
+    "offchart.sqlite",            # `--db` run from the repo root
+    "scratch.sqlite",
+    "scratch.db",
+)
+
+
+@pytest.mark.parametrize("rel", _STORE_PATHS_THAT_MUST_BE_IGNORED)
+def test_no_store_path_inside_the_repo_is_committable(rel: str) -> None:
+    """The redistribution rule stated as a property instead of as one path.
+
+    A store contains umich_sca, which is licensed for use and not for redistribution,
+    so the question is never "is the default path ignored" but "can a store be
+    committed at all". Asserting the constant answers a narrower question than the
+    rule makes, and the gap is not hypothetical: the scripts accept `--db`, so
+    `make backfill --db data/offchart.db` produced a committable file holding every
+    restricted row while every test stayed green.
+    """
+    assert _is_ignored(rel), (
+        f"{rel} is NOT gitignored, but a store written there holds umich_sca, which "
+        "may not be redistributed. Widen the pattern in .gitignore rather than "
+        "narrowing this list -- a store is defined by what it contains, not by where "
+        "someone happened to put it."
+    )
+
+
+def test_the_committed_test_fixture_is_still_committable() -> None:
+    """The converse, and the reason the ignore pattern cannot simply be `*`.
+
+    tests/fixtures/fixture.sqlite is the corpus the whole suite runs against and it
+    MUST stay committed -- which is safe only because its restricted slice is
+    fabricated rather than sampled (tests/fixtures/build.py). Without this assertion,
+    broadening the store pattern to close the hole above would silently un-commit the
+    fixture and every test would start depending on a file nobody has.
+    """
+    rel = (ROOT / "tests" / "fixtures" / "fixture.sqlite").relative_to(ROOT).as_posix()
+    assert not _is_ignored(rel), (
+        f"{rel} is gitignored, so the suite's own corpus would drop out of the repo. "
+        "The store pattern needs an exception for it."
+    )
+
+
 def test_the_snapshot_directory_is_NOT_gitignored() -> None:
     """The inverse, and it is the one that loses data if it breaks. data/snapshots/ is
     the only committed copy of the history that no API can return."""
