@@ -30,6 +30,13 @@ on:
     - cron: "15 20 * * *"
   workflow_dispatch:
   push:
+    # main ONLY, and the restriction is load-bearing. This job commits a CSV, so on a
+    # feature branch whose date is not yet captured it would write a snapshot onto that
+    # branch -- which then has to be merged, or is silently discarded when the branch is
+    # deleted. That is a way to lose the one thing here that cannot be re-fetched.
+    # Snapshots belong on the branch the daily schedule runs against, and nowhere else.
+    # The tests workflow already runs on every branch, so nothing is left unchecked.
+    branches: [main]
     paths:
       - "sources/**"
       - "lib/snapshots.py"
