@@ -29,25 +29,29 @@ stating because the two grants involved contradict each other:
       Surveys of Consumers.'"
 
 So USE and RE-CHARTING of these three public tables is expressly permitted, and
-redistribution is expressly not. A committed parquet in a public repo is
+redistribution is expressly not. A committed copy in a public repo is
 redistribution however you label it. The corroborating evidence is FRED, which
 carries the same series as a licensed party -- "Reprinted with permission ... At
 the request of the source, the data is delayed by 1 month"
 (https://fred.stlouisfed.org/series/UMCSENT). UMich grants redistribution case by
 case; it is not open.
 
-The resolution keeps the repo's architecture intact rather than working around it.
-The board still reads ONLY from data/*.parquet and never fetches at render time --
-that invariant is what makes it impossible for a chart to show a number that is not
-on disk. The parquet is simply gitignored (see .gitignore, and the test in
-tests/test_sources.py that enforces it from the `redistributable` flag rather than
-from a comment). Cost: a fresh clone has no sentiment data until it ingests, and
-app.py already renders the "not ingested yet" notice for exactly that case.
+The resolution costs this repo nothing structural, because the store was never going
+to be committed anyway: these rows land in data/offchart.sqlite like every other
+source, and that file is excluded. What `redistributable=False` adds is that the
+source may have no committed artefact either -- no directory under data/snapshots/ --
+which tests/test_sources.py enforces from the flag rather than from a comment.
+Grafana reads the local database, so the charts work exactly as they do for CFTC.
+Cost: a fresh clone has no sentiment data until it runs `make pull`.
+
+This is also what makes the survey safe to keep in a PUBLIC repo. Nothing UMich owns
+reaches version control: not the database, not the test fixture (tests/fixtures/build
+fabricates the umich_sca slice for precisely this reason), not a snapshot directory.
 
 If you want it committed, the agreement's own escape hatch is "express written
 consent". UMich does not publish a permissions channel; the general contact address
 on sca.isr.umich.edu/contact.html is umsurvey@umich.edu. With consent in hand, flip
-`redistributable` and drop the .gitignore line.
+`redistributable` and the test that forbids a snapshot directory stops applying.
 
 Two things NOT to conclude from the above. The data site is not login-gated -- it is
 publicly readable, and what sponsors buy is early access, the public copy lagging by
@@ -117,7 +121,7 @@ import urllib.request
 
 import pandas as pd
 
-from lib import store
+from lib import db
 from lib.schema import TableSchema
 
 BASE = "https://www.sca.isr.umich.edu/files"
@@ -141,7 +145,7 @@ MONTHS = {
     "December": 12,
 }
 
-UA = {"User-Agent": "watchboard research (personal, low volume; charts recreated per sca.isr.umich.edu FAQ)"}
+UA = {"User-Agent": "offchart research (personal, low volume; charts recreated per sca.isr.umich.edu FAQ)"}
 
 #: The month monthly interviewing began. Before this the survey ran quarterly or
 #: less, so a rank of the level across the boundary would compare a monthly
@@ -268,11 +272,20 @@ def _report_revisions(fresh: pd.DataFrame) -> None:
     a revision is legitimate upstream behaviour, and the point is only that it stops
     being invisible.
     """
-    if not store.exists("umich_sca"):
-        print("  . first pull -- nothing to compare against")
+    # Opened read-only and independently of the ingest connection: this is a
+    # diagnostic, and it must not be able to affect the write it is reporting on.
+    try:
+        con = db.connect(read_only=True)
+    except Exception:
+        print("  . no store yet -- nothing to compare against")
         return
-
-    old = store.read("umich_sca")
+    try:
+        if not db.has_rows(con, "umich_sca"):
+            print("  . first pull -- nothing to compare against")
+            return
+        old = db.read_frame(con, "umich_sca")
+    finally:
+        con.close()
     if old.empty:
         return
 
@@ -289,7 +302,7 @@ def _report_revisions(fresh: pd.DataFrame) -> None:
             continue
         a = pd.to_numeric(before.loc[shared, col], errors="coerce")
         b = pd.to_numeric(after.loc[shared, col], errors="coerce")
-        # Tolerance, because the stored copy is float32 (lib.store downcasts) and
+        # Tolerance, because the stored copy has been through float32 and
         # comparing it to a freshly parsed float64 otherwise reports every cell as
         # revised. 5e-3 is far below the one-decimal precision UMich publishes, so
         # a real revision cannot hide underneath it.

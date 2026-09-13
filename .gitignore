@@ -1,40 +1,45 @@
 __pycache__/
 *.py[cod]
-.venv/
-venv/
 .env
 .DS_Store
-.streamlit/secrets.toml
 .ipynb_checkpoints/
 
-# data/ is deliberately NOT ignored -- committing it is the whole mechanism by
-# which snapshot-only sources ever acquire a history.
-#
-# THE ONE EXCEPTION, per source, is data we are not licensed to redistribute. The
-# University of Michigan grants permission-free USE of its public Surveys of
-# Consumers tables and separately prohibits redistribution without written consent
-# (faq.php vs agreement.php -- see sources/umich.py for both quotes). Charting them
-# is fine; mirroring them into a public repo is not. So this file is fetched and
-# read like any other, and simply never committed.
-#
-# Do not add lines here by hand: a source declares `redistributable=False` and
-# tests/test_sources.py asserts, via `git check-ignore`, that its parquet is
-# ignored. Adding the flag without the line fails the suite, and vice versa.
-data/umich_sca.parquet
+# No trailing slash, on purpose. `.venv/` matches a DIRECTORY only, and a symlink is a
+# file to git -- so `ln -s ../shared/.venv .venv`, which is a reasonable thing to do in a
+# worktree, produced an untracked entry that `git add -A` would have committed as an
+# absolute path pointing at one machine. Caught here before it shipped.
+.venv
+venv
 
-# The SQLite store (lib/db). Deliberately NOT committed, for two reasons.
+# ---------------------------------------------------------------- data/
 #
-# It contains umich_sca, which is licensed for use and not redistribution -- the same
-# rule as the line above, and tests/test_db.py asserts this one too.
+# data/ splits in two, and the split is the whole durability story of this repo.
 #
-# And it does not need committing: nine of the ten sources are backfillable, so losing
-# this file costs one `scripts/ingest --backfill`. The tenth, openrouter_pricing,
-# serves only "today" and its history is genuinely irreplaceable -- so it does NOT
-# live here. It lives in git as one immutable CSV per snapshot date under
-# data/snapshots/, which must stay committed.
+# THE DATABASE IS NOT COMMITTED. Two independent reasons, either sufficient:
+#
+#   It contains umich_sca. The University of Michigan grants permission-free USE of
+#   its public Surveys of Consumers tables and separately prohibits redistribution
+#   without written consent (faq.php vs agreement.php -- both quoted in
+#   sources/umich.py). Charting them is fine; mirroring them into a public repo is
+#   not. So the file is fetched and read like any other, and never committed.
+#
+#   It does not need committing. Nine of the ten sources are backfillable=True, so
+#   losing this file costs one `make backfill`. It is a cache of public APIs.
+#
+# data/snapshots/ IS COMMITTED, and nothing below may ignore it. The tenth source
+# (openrouter_pricing) serves only "today" with no archive, so a missed run is a
+# permanent hole and its history exists solely because we keep it. It lives in git as
+# one immutable CSV per snapshot date. tests/test_sources.py asserts both directions
+# of this via `git check-ignore` -- that the database is ignored and that
+# data/snapshots/ is NOT -- because a comment cannot catch either mistake.
 data/*.sqlite
 data/*.sqlite-wal
 data/*.sqlite-shm
+
+# The parquet store this repo used until the SQLite migration. Ignored rather than
+# merely deleted: `make backfill` no longer writes these, but a checkout of an older
+# commit does, and a stray 115 MB of them getting re-committed is a silent mistake.
+data/*.parquet
 
 # Boards that were built and then set aside. Kept on disk so they are cheap to
 # revive, out of the tree so the repo shows only what ships. They are still in
@@ -53,8 +58,8 @@ data/*.sqlite-shm
 # itself visible, which is what makes the negation bite.
 #
 # What the blanket rule is really for is worktrees/: `git worktree add` puts linked
-# checkouts there, each a full copy of the tree including data/, 118 MB at the time
-# of writing. Each also contains a `.git` FILE, so git sees a nested repository and
-# `git add -A` either warns and skips or writes a gitlink -- both awkward to undo.
+# checkouts there, each a full copy of the tree including data/, gigabytes at the
+# time of writing. Each also contains a `.git` FILE, so git sees a nested repository
+# and `git add -A` either warns and skips or writes a gitlink -- both awkward to undo.
 .claude/*
 !.claude/settings.local.json

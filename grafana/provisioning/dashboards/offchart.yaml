@@ -1,0 +1,15 @@
+# Dashboards come from committed JSON. allowUiUpdates is false on purpose: it makes
+# the file authoritative, so a dashboard cannot drift away from what is in git and a
+# test that lints the JSON is linting what actually renders.
+apiVersion: 1
+
+providers:
+  - name: offchart
+    orgId: 1
+    folder: Offchart
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    options:
+      path: /repo/grafana/dashboards
+      foldersFromFilesStructure: false

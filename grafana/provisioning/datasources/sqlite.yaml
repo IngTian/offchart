@@ -1,4 +1,4 @@
-# The watchboard database, provisioned from a file so the dashboard is reproducible
+# The offchart database, provisioned from a file so the dashboard is reproducible
 # from a clone rather than clicked together.
 #
 # frser-sqlite-datasource, not a core source: Grafana's built-in SQL sources are
@@ -9,11 +9,11 @@
 apiVersion: 1
 
 datasources:
-  - name: watchboard
-    uid: watchboard
+  - name: offchart
+    uid: offchart
     type: frser-sqlite-datasource
     access: proxy
     isDefault: true
     jsonData:
       # Path INSIDE the container. The repo is mounted at /repo.
-      path: /repo/data/watchboard.sqlite
+      path: /repo/data/offchart.sqlite

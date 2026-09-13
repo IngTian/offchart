@@ -39,7 +39,7 @@ import pandas as pd
 from lib.schema import TableSchema
 
 ENDPOINT = "https://openrouter.ai/api/v1/models"
-UA = {"User-Agent": "watchboard research (personal, low volume)"}
+UA = {"User-Agent": "offchart research (personal, low volume)"}
 
 PRICE_FIELDS = ("prompt", "completion", "input_cache_read", "input_cache_write")
 

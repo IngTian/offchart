@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
-"""Build the database Grafana reads.
-
-    python -m scripts.build --archive     # parquet -> SQLite archive tables
-    python -m scripts.build --serving     # archive -> wide board_* tables
-    python -m scripts.build --all
+"""Derive the wide board_* tables Grafana queries. Run: python -m scripts.build
 
 TWO LAYERS, AND THE SPLIT IS THE POINT
 
 The ARCHIVE mirrors each source faithfully: same rows, same columns, keyed as the
-source declares. It is what lib/db.upsert writes and what a round-trip test compares
-against the parquet.
+source declares. scripts/ingest writes it, through lib/db.upsert, and nothing in this
+file touches it except to read.
 
 The SERVING tables are wide -- one row per grid timestamp, one column per series --
 because that is what a Grafana panel query wants and because both boards already put
@@ -55,9 +51,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd  # noqa: E402
 
-from lib import cohort_groups, db, metrics, pricemap, segments, store, umich_spec  # noqa: E402
+from lib import cohort_groups, db, metrics, pricemap, segments, umich_spec  # noqa: E402
 from lib.universe import assign_tiers, market_summary  # noqa: E402
-from sources import all_sources  # noqa: E402
 
 #: Families charted on the positioning board. futopt is ingested but not served: a
 #: combined-basis figure does not reconcile against a futures-only one, and putting
@@ -89,48 +84,42 @@ def _epoch_ms(when) -> pd.Series:
     return pd.Series(idx.astype("int64") // 1_000_000, index=range(len(idx)))
 
 
-def archive(con) -> None:
-    """Load every source's parquet into its archive table.
-
-    A bridge, not the destination: once ingest writes to the database directly this
-    becomes unnecessary. It exists so the two stores can be compared while both live.
-    """
-    for src in all_sources():
-        frame = store.read(src.id)
-        if frame.empty:
-            print(f"  . {src.id:<22} (empty, skipped)")
-            continue
-        t0 = time.time()
-        report = db.upsert(con, src.id, frame, src.key)
-        print(f"  = {src.id:<22} {report['rows_total']:>9,} rows "
-              f"({report['rows_new']:,} new, {report['rows_value_changed']:,} changed) "
-              f"{time.time() - t0:.1f}s")
-
-
 def _served_markets(dataset: str, frame: pd.DataFrame) -> set[str]:
     summary = assign_tiers(market_summary(frame))
     tiered = summary[summary["tier"].isin(SERVED_TIERS)]
     return set(tiered["market_code"].astype(str))
 
 
-def _price_for(symbol: str, dates: pd.Series) -> pd.Series:
+def _closes_by_symbol(con) -> dict[str, pd.DataFrame]:
+    """symbol -> its close series, read ONCE.
+
+    Read once rather than per market because the naive version re-read the whole
+    202,451-row prices table inside the per-market loop -- 700-odd times per family,
+    invisible except as a build that takes minutes.
+    """
+    px = db.read_frame(con, "prices")
+    if px.empty:
+        return {}
+    px = px[["symbol", "date", "close"]].copy()
+    px["date"] = pd.to_datetime(px["date"])
+    return {str(sym): sub for sym, sub in px.groupby("symbol", observed=True)}
+
+
+def _price_for(closes: dict[str, pd.DataFrame], symbol: str, dates: pd.Series) -> pd.Series:
     """Close as-of each report date, backward only, staleness-capped.
 
     metrics.asof, not a merge on nearest: nearest would put a price that did not exist
     yet beside a position, which is look-ahead smuggled in through a join.
     """
-    px = store.read("prices")
-    if px.empty:
-        return pd.Series(index=dates.index, dtype=float)
-    one = px[px["symbol"] == symbol]
-    if one.empty:
+    one = closes.get(symbol)
+    if one is None or one.empty:
         return pd.Series(index=dates.index, dtype=float)
     return metrics.asof(
-        pd.to_datetime(one["date"]), one["close"], dates, max_staleness_days=10
+        one["date"], one["close"], dates, max_staleness_days=10
     )
 
 
-def _positioning_rows(dataset: str, frame: pd.DataFrame) -> pd.DataFrame:
+def _positioning_rows(dataset: str, frame: pd.DataFrame, closes: dict[str, pd.DataFrame]) -> pd.DataFrame:
     """One row per (market, cohort group, week), with every derived column."""
     frame = frame.copy()
     frame["report_date"] = pd.to_datetime(frame["report_date"])
@@ -153,7 +142,7 @@ def _positioning_rows(dataset: str, frame: pd.DataFrame) -> pd.DataFrame:
         seg.index = oi.index
 
         ref = pricemap.for_code(code)
-        price = (_price_for(ref.symbol, pd.Series(list(oi.index)))
+        price = (_price_for(closes, ref.symbol, pd.Series(list(oi.index)))
                  if ref else pd.Series(index=range(len(oi)), dtype=float))
         price.index = oi.index
 
@@ -193,9 +182,9 @@ def _positioning_rows(dataset: str, frame: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
 
 
-def _inflation_rows() -> pd.DataFrame:
+def _inflation_rows(con) -> pd.DataFrame:
     """The survey board, wide, with each rank taken over its own declared pool."""
-    frame = store.read("umich_sca")
+    frame = db.read_frame(con, "umich_sca")
     if frame.empty:
         return pd.DataFrame()
     frame = frame[frame["survey_date"] >= umich_spec.MONTHLY_FROM]
@@ -238,15 +227,16 @@ def _swap_in(con, table: str, frame: pd.DataFrame, key: tuple[str, ...]) -> None
 
 
 def serving(con) -> None:
+    closes = _closes_by_symbol(con)
     frames = []
     for dataset in FAMILIES:
         raw = db.read_frame(con, dataset)
         if raw.empty:
-            print(f"  ! {dataset} has no archive rows -- run --archive first")
+            print(f"  ! {dataset} has no rows -- run `make pull` (or `make backfill`) first")
             continue
         print(f"  . {dataset}")
         t0 = time.time()
-        rows = _positioning_rows(dataset, raw)
+        rows = _positioning_rows(dataset, raw, closes)
         print(f"    {len(rows):,} rows in {time.time() - t0:.1f}s")
         frames.append(rows)
 
@@ -256,7 +246,7 @@ def serving(con) -> None:
                  ("dataset", "market_code", "cohort_group", "ts"))
         print(f"  = board_positioning {len(allrows):,} rows")
 
-    infl = _inflation_rows()
+    infl = _inflation_rows(con)
     if not infl.empty:
         _swap_in(con, "board_inflation", infl, ("ts",))
         print(f"  = board_inflation {len(infl):,} rows")
@@ -264,22 +254,12 @@ def serving(con) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--archive", action="store_true")
-    ap.add_argument("--serving", action="store_true")
-    ap.add_argument("--all", action="store_true")
     ap.add_argument("--db", default=None, help="path to the sqlite file")
     args = ap.parse_args()
-    if not (args.archive or args.serving or args.all):
-        ap.error("choose --archive, --serving or --all")
 
     con = db.connect(args.db)
     try:
-        if args.archive or args.all:
-            print("=== archive")
-            archive(con)
-        if args.serving or args.all:
-            print("=== serving")
-            serving(con)
+        serving(con)
         con.commit()
         # Leave WAL mode. A WAL-mode file bind-mounted into the Grafana container
         # makes concurrent panel queries lose a lock race -- see db.finalize_for_serving.

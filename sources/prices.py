@@ -48,7 +48,7 @@ from sources.base import Source
 ENDPOINT = "https://query1.finance.yahoo.com/v8/finance/chart/"
 
 # A browser UA: the endpoint refuses some non-browser agents outright.
-UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) watchboard research"}
+UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) offchart research"}
 
 #: 1990-01-01. Earlier than any mapped series begins, so a full pull gets
 #: everything the endpoint holds without asking for a range it will reject.

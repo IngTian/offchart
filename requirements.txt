@@ -1,18 +1,23 @@
-# pyarrow is pinned tightly on purpose. Byte-level reproducibility of the parquet
-# files is a pyarrow property, not a pandas one, and lib/store.py relies on it to
-# skip a write when nothing changed -- which is what keeps no-op days out of git.
-# A pyarrow minor bump rewrites every file identically-in-content and produces one
-# ~115 MB no-op commit.
-# 25.* is the version that wrote the committed data/ files (visible in their
-# parquet metadata as "parquet-cpp-arrow version 25.0.1"). Changing it is a
-# deliberate act that costs one full-size no-op commit, not a routine bump.
+# Two runtime dependencies, and that is deliberate.
+#
+# The store is SQLite, which is in the standard library. HTTP is urllib, also standard
+# library -- these are public JSON and CSV endpoints, none of which needs `requests`.
+# The display layer is Grafana, which is a container and not a Python package. So what
+# is left is the dataframe library the statistics are written against, and the runner
+# for the tests that prove them.
+#
+# What used to be here, and why it is gone:
+#   pyarrow==25.*   pinned for byte-reproducible parquet, so an unchanged day produced
+#                   an identical file and an empty git diff. There is no parquet now;
+#                   the store is one gitignored SQLite file, and durability comes from
+#                   the committed CSVs in data/snapshots/ instead.
+#   streamlit,      the hand-maintained board. Replaced by Grafana reading SQL, which
+#   plotly          is why this repo now owns data and preprocessing only.
 pandas>=3.0,<4
-pyarrow==25.*
-plotly>=5.22,<8
-streamlit>=1.36,<2
 
-# Tests are not optional here: they pin three corrections this repo has already
-# had to make once (the residual is rounding not an unpublished spread; sum(net)
-# is not exact; concentration divides by the side total), and they are the actual
-# enforcement mechanism for the no-dual-axis and causal-ranking rules.
+# Not optional here. These tests pin three corrections this repo has already had to
+# make once (the open-interest residual is rounding, not an unpublished spread;
+# sum(net) is not exact; the concentration columns divide by the side total), and they
+# are the enforcement mechanism for the two rules that matter -- causal ranks only,
+# and no committed artefact for a source we may not redistribute.
 pytest>=8.0

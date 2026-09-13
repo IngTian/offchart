@@ -1,8 +1,8 @@
 """All seven CFTC Commitments-of-Traders datasets, from one parser.
 
-Each dataset becomes its own Source and its own parquet file. That is a
-deliberate choice over one combined table with a `family` column, and the reason
-is a bug that combining invites:
+Each dataset becomes its own Source and its own table. That is a deliberate
+choice over one combined table with a `family` column, and the reason is a bug
+that combining invites:
 
     the same cftc_contract_market_code exists in several families
 

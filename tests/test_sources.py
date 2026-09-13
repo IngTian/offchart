@@ -1,9 +1,17 @@
-"""The source contract, and the licence rule in particular.
+"""The source contract: what may be committed, and what MUST be.
 
-Everything here is about a failure mode that leaves the pipeline working: a source
-whose terms forbid redistribution, ingested into a parquet that then gets committed
-because nobody remembered. A comment in .gitignore cannot catch that. `git
-check-ignore` can, so these tests ask git.
+Two failure modes, opposite in direction, both of which leave the pipeline working.
+
+  Publishing what we may not. A source whose terms forbid redistribution gets
+  ingested and then committed because nobody remembered. The database is gitignored
+  so the ordinary path is safe; the risk is a snapshot directory, which IS committed.
+
+  Losing what cannot be re-fetched. A `backfillable=False` source's history exists
+  only because we keep it. The database is gitignored and disposable, so if that
+  source has no snapshot directory its history depends on one machine's disk.
+
+A comment in .gitignore catches neither. `git check-ignore` does, so these tests ask
+git rather than trusting the file to say what it means.
 """
 from __future__ import annotations
 
@@ -17,7 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import sources  # noqa: E402
-from lib import store  # noqa: E402
+from lib import db, snapshots  # noqa: E402
 from lib.schema import TableSchema  # noqa: E402
 from sources.base import Source  # noqa: E402
 
@@ -47,34 +55,65 @@ def test_sources_were_discovered() -> None:
     assert sources.all_sources(), "no sources discovered at all"
 
 
-@pytest.mark.parametrize("source", sources.all_sources(), ids=lambda s: s.id)
-def test_non_redistributable_data_is_gitignored(source: Source) -> None:
-    """The licence rule, enforced by git rather than by good intentions.
-
-    A source marked not-redistributable must have its parquet ignored, or an ingest
-    run followed by `git add -A` publishes data we were not licensed to publish. The
-    converse matters too: silently ignoring a source we ARE allowed to commit would
-    quietly break the offline guarantee the whole repo rests on.
-    """
-    path = store.path_for(source.id)
-    rel = path.relative_to(ROOT).as_posix()
-    ignored = subprocess.run(
-        ["git", "check-ignore", "-q", rel],
-        cwd=ROOT, capture_output=True,
+def _is_ignored(rel: str) -> bool:
+    return subprocess.run(
+        ["git", "check-ignore", "-q", rel], cwd=ROOT, capture_output=True
     ).returncode == 0
 
+
+def test_the_database_is_gitignored() -> None:
+    """It holds every source, including ones licensed for use but not redistribution,
+    so it must never be committable -- and it does not need to be, because nine of ten
+    sources can be re-fetched."""
+    rel = db.DB_PATH.relative_to(ROOT).as_posix()
+    assert _is_ignored(rel), f"{rel} must be gitignored"
+
+
+def test_the_snapshot_directory_is_NOT_gitignored() -> None:
+    """The inverse, and it is the one that loses data if it breaks. data/snapshots/ is
+    the only committed copy of the history that no API can return."""
+    rel = snapshots.SNAPSHOT_DIR.relative_to(ROOT).as_posix()
+    assert not _is_ignored(rel), (
+        f"{rel} is gitignored -- that is the committed home of the one source that "
+        "cannot be re-fetched, and ignoring it makes a missed day permanent"
+    )
+
+
+@pytest.mark.parametrize("source", sources.all_sources(), ids=lambda s: s.id)
+def test_a_source_we_may_not_redistribute_has_no_committed_snapshots(source: Source) -> None:
+    """Snapshots are committed, so a restricted source having one would publish it --
+    the exact thing its licence forbids."""
     if source.redistributable:
-        assert not ignored, (
-            f"{rel} is gitignored but {source.id} is marked redistributable. "
-            "Committing the data is how snapshot sources acquire history and how the "
-            "board works offline."
-        )
-    else:
-        assert ignored, (
-            f"{source.id} is marked NOT redistributable ({source.license}) but {rel} "
-            "is not gitignored. An ingest run plus `git add -A` would publish it. "
-            "Add the path to .gitignore."
-        )
+        return
+    directory = snapshots.dir_for(source.id)
+    assert not directory.exists() or not list(directory.glob("*.csv")), (
+        f"{source.id} may not be redistributed ({source.license}) but has committed "
+        f"snapshots in {directory}"
+    )
+
+
+@pytest.mark.parametrize("source", sources.all_sources(), ids=lambda s: s.id)
+def test_a_source_that_cannot_be_refetched_has_committed_snapshots(source: Source) -> None:
+    """The durability rule, and the reason lib/snapshots exists.
+
+    A backfillable source loses nothing when the database is deleted -- one refetch
+    restores it. This one cannot be refetched at all, so if it has no committed
+    snapshot its history lives on exactly one disk.
+    """
+    if source.backfillable:
+        return
+    files = sorted(snapshots.dir_for(source.id).glob("*.csv"))
+    assert files, (
+        f"{source.id} is backfillable=False, so its history cannot be recovered from "
+        f"the API. It must have committed snapshots in "
+        f"{snapshots.dir_for(source.id)}; run scripts.ingest to write them."
+    )
+    gaps = snapshots.missing_dates(source.id)
+    assert not gaps, (
+        f"{source.id} is missing {len(gaps)} snapshot date(s) between its first and "
+        f"last: {gaps[:8]}. These are unrecoverable; if the gap is known and accepted, "
+        "record it here rather than deleting this assertion."
+    )
 
 
 @pytest.mark.parametrize("source", sources.all_sources(), ids=lambda s: s.id)
@@ -83,7 +122,7 @@ def test_restricted_source_declares_its_terms_and_attribution(source: Source) ->
         return
     assert source.license != "unspecified", "record the terms that forbade mirroring"
     assert source.citation, "an upstream asserting rights will want attribution"
-    assert source.caveats, "a restricted source must say so next to its charts"
+    assert source.caveats, "a restricted source must carry its limitations"
 
 
 def test_restricted_source_cannot_omit_its_license() -> None:
@@ -106,7 +145,8 @@ def test_open_source_needs_neither() -> None:
 def test_sort_key_leads_with_a_date(source: Source) -> None:
     """Already asserted in __post_init__; pinned here so the reason survives.
 
-    Date-first write order is what makes a weekly append a tail append instead of a
-    rewrite of every row group -- measured at ~480x on git growth.
+    The git-churn justification expired with the parquet store. Two reasons remain:
+    it is the column scripts/ingest reads to compute the incremental fetch floor, and
+    it is the column that becomes `ts` in the serving tables.
     """
     assert source.sort_key[0].endswith("date")

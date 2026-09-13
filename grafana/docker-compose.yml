@@ -14,7 +14,7 @@
 services:
   grafana:
     image: grafana/grafana:12.3.1
-    container_name: wb-grafana
+    container_name: offchart-grafana
     ports:
       - "3000:3000"
     environment:
