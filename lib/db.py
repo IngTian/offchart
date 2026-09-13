@@ -1,4 +1,4 @@
-"""The SQLite store. Same contract as lib/store, different medium.
+"""The store. One SQLite file, one table per source.
 
 WHY A DATABASE AT ALL, AND WHY THIS ONE
 
@@ -27,8 +27,8 @@ alongside the human-readable date. Grafana's $__from/$__to are milliseconds.
 
 WHAT THIS MODULE IS NOT
 
-It is not the serving layer. This holds the ARCHIVE: one table per source, the same
-columns the parquet had, faithful to the row. The wide per-board tables Grafana
+It is not the serving layer. This holds the ARCHIVE: one table per source, faithful
+to the row and to the columns the source declares. The wide per-board tables Grafana
 actually queries are derived from these by a separate builder, because the
 percentiles they carry must be computed in pandas (see scripts/build) -- the segment
 boundaries that a rank must respect come from a regex over free-text contract units,
@@ -51,10 +51,12 @@ from pathlib import Path
 
 import pandas as pd
 
-#: Beside the parquet, not replacing it yet. Gitignored -- see .gitignore, and the
-#: test that asserts it, because this file will contain umich_sca, which is licensed
-#: for use and not for redistribution.
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "watchboard.sqlite"
+#: The whole store. Excluded from version control -- see .gitignore, and the tests
+#: that assert it -- both because this file contains umich_sca (licensed for use, not
+#: redistribution) and because it does not need committing: it is a cache of public
+#: APIs, and the one source that is NOT re-fetchable keeps its history in
+#: data/snapshots/ instead.
+DB_PATH = Path(__file__).resolve().parent.parent / "data" / "offchart.sqlite"
 
 
 def table_for(source_id: str) -> str:
@@ -77,9 +79,16 @@ def connect(path: Path | str | None = None, *, read_only: bool = False) -> sqlit
         path = DB_PATH
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     if read_only:
+        # No journal_mode here: setting it is a WRITE, and a read-only connection
+        # cannot make one. This was latent rather than theoretical -- it stayed
+        # invisible while the file happened to be in WAL already (setting WAL to WAL
+        # touches nothing) and became "attempt to write a readonly database" the
+        # moment finalize_for_serving left WAL, which is now every build.
         con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    else:
-        con = sqlite3.connect(str(path))
+        con.execute("PRAGMA busy_timeout = 30000")
+        return con
+
+    con = sqlite3.connect(str(path))
     con.execute("PRAGMA journal_mode = WAL")
     con.execute("PRAGMA busy_timeout = 30000")
     con.execute("PRAGMA foreign_keys = ON")
@@ -239,14 +248,13 @@ def has_rows(con: sqlite3.Connection, source_id: str) -> bool:
 def read_frame(con: sqlite3.Connection, source_id: str,
                columns: list[str] | None = None,
                like: pd.DataFrame | None = None) -> pd.DataFrame:
-    """Read a source back, shaped like lib.store.read returned it.
+    """Read a source back as a tidy frame.
 
-    `like` is a frame whose dtypes the result should match. That argument exists
-    because SQLite has five storage classes and pandas has many: a column stored as
-    INTEGER comes back int64 whether it left as Int32 or as a nullable count with
-    real nulls, and a category comes back as object. During the migration the caller
-    has the parquet frame to hand, so matching it exactly is what makes the round-trip
-    test meaningful rather than approximate.
+    `like` is a frame whose dtypes the result should match, and it exists because
+    SQLite has five storage classes where pandas has many: a column stored as INTEGER
+    comes back int64 whether it left as Int32 or as a nullable count with real nulls,
+    and a category comes back as object. Callers that care -- the round-trip test, and
+    anything comparing two reads -- pass the frame they expect.
     """
     if not has_table(con, source_id):
         return pd.DataFrame()
@@ -271,11 +279,31 @@ def read_frame(con: sqlite3.Connection, source_id: str,
     return frame[[c for c in like.columns if c in frame.columns]]
 
 
+def finalize_for_serving(con: sqlite3.Connection) -> str:
+    """Check-point the WAL and leave WAL mode. Call this when a build finishes.
+
+    NOT cosmetic, and the failure it prevents is one panel in three showing "No data".
+    Measured: with the file in WAL mode and bind-mounted into the Grafana container on
+    macOS, the three panels of a board query concurrently and one loses a lock race --
+    the plugin returns `database is locked (5) (SQLITE_BUSY)` and Grafana draws an
+    empty panel beside two full ones. In rollback-journal mode a reader does not need
+    to attach the -shm file at all, and the same three panels all return 200.
+
+    WAL is still right for WRITING: one writer and N readers is exactly what it is for,
+    and the build wants it. So the mode is a phase, not a setting -- WAL while building,
+    DELETE once the file is something Grafana reads.
+    """
+    con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    mode = con.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
+    return str(mode)
+
+
 def latest_date(con: sqlite3.Connection, source_id: str,
                 date_column: str = "report_date") -> str | None:
     """Most recent stored date, or None. Drives the incremental fetch floor.
 
-    An index seek where the parquet version read the whole column.
+    One index seek rather than a scan: the date is the leading column of the primary
+    key, so max() reads the end of the index.
     """
     if not has_table(con, source_id):
         return None
@@ -284,7 +312,7 @@ def latest_date(con: sqlite3.Connection, source_id: str,
             f'SELECT max("{date_column}") FROM "{table_for(source_id)}"'
         ).fetchone()
     except sqlite3.OperationalError:
-        return None  # column absent: same contract as the parquet version
+        return None  # column absent: same contract as an absent table
     if not row or row[0] is None:
         return None
     return str(pd.to_datetime(row[0]).date())

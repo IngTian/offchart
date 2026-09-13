@@ -1,0 +1,168 @@
+{
+  "uid": "offchart-inflation",
+  "title": "Inflation expectations (UMich)",
+  "description": "University of Michigan Surveys of Consumers. A SEPARATE board from Positioning on purpose: it shares no market, no cadence and no denominator with the CFTC data, and putting a monthly survey on the same canvas as weekly futures positioning invites reading a relationship that nothing here tests. Percentile ranks are causal, precomputed in pandas by scripts/build, and each is taken over its own declared regime pool -- see lib/umich_spec.",
+  "tags": ["offchart", "umich", "inflation"],
+  "timezone": "utc",
+  "editable": false,
+  "graphTooltip": 2,
+  "schemaVersion": 39,
+  "refresh": "",
+  "time": { "from": "now-25y", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Expected price change, next year and next 5-10 years (median, % per year)",
+      "description": "MEDIAN, not mean -- the mean is dragged by a fat right tail and is a different number. And the question asks about 'prices in general', not the CPI: it is a household expectation, not a forecast of a published index. Both series are in % per year, which is why they share one axis. The 1-year series is only continuous from 1982-03 and the 5-10 year series from 1990-04; before those dates the question was worded differently or asked sporadically, so the line has real holes and they are drawn as holes.",
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "spanNulls": false,
+            "showPoints": "never",
+            "axisPlacement": "left",
+            "axisWidth": 80,
+            "axisSoftMin": 0
+          },
+          "unit": "percent",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
+          "queryType": "time series",
+          "timeColumns": ["time"],
+          "rawQueryText": "SELECT ts/1000 AS time, infl_exp_1y AS 'next 1 year', infl_exp_5y10y AS 'next 5-10 years' FROM board_inflation WHERE ts BETWEEN $__from AND $__to ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, infl_exp_1y AS 'next 1 year', infl_exp_5y10y AS 'next 5-10 years' FROM board_inflation WHERE ts BETWEEN $__from AND $__to ORDER BY ts"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Where each expectation sits in its own history (causal percentile)",
+      "description": "Each month ranked only against months up to and including itself, within its own regime pool. A rank is BLANK rather than approximated when its pool is shorter than 36 observations -- the rule lives in the data, not in an if-statement inside this panel.",
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 10 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": false,
+            "showPoints": "never",
+            "axisPlacement": "left",
+            "axisWidth": 80,
+            "axisSoftMin": 0,
+            "axisSoftMax": 100
+          },
+          "unit": "percent",
+          "decimals": 0,
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
+          "queryType": "time series",
+          "timeColumns": ["time"],
+          "rawQueryText": "SELECT ts/1000 AS time, infl_exp_1y_pctile AS '1 year pctile', infl_exp_5y10y_pctile AS '5-10 year pctile' FROM board_inflation WHERE ts BETWEEN $__from AND $__to ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, infl_exp_1y_pctile AS '1 year pctile', infl_exp_5y10y_pctile AS '5-10 year pctile' FROM board_inflation WHERE ts BETWEEN $__from AND $__to ORDER BY ts"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Sentiment index, and its two components",
+      "description": "Index points, 1966=100, so all three belong on one axis. There is a break here that the line does NOT show: UMich moved the survey from telephone to web over April-June 2024 and measured the change at -6.6 index points on sentiment. They smeared the transition deliberately, so the level has no visible step -- which is exactly why the percentile for these three columns is computed only over the web era, and is blank while that era is shorter than 36 months.",
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 18 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "spanNulls": false,
+            "showPoints": "never",
+            "axisPlacement": "left",
+            "axisWidth": 80
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
+          "queryType": "time series",
+          "timeColumns": ["time"],
+          "rawQueryText": "SELECT ts/1000 AS time, sentiment AS 'sentiment', current_conditions AS 'current conditions', expectations AS 'expectations' FROM board_inflation WHERE ts BETWEEN $__from AND $__to ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, sentiment AS 'sentiment', current_conditions AS 'current conditions', expectations AS 'expectations' FROM board_inflation WHERE ts BETWEEN $__from AND $__to ORDER BY ts"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Latest survey",
+      "description": "The most recent month, with the size of the pool each percentile was measured against. A blank percentile beside a populated pool count means the pool is under the 36-observation floor -- the web era, today.",
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 27 },
+      "fieldConfig": {
+        "defaults": { "decimals": 1 },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".*pctile.*|.*months ranked.*" },
+            "properties": [{ "id": "decimals", "value": 0 }]
+          }
+        ]
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
+          "queryType": "table",
+          "timeColumns": [],
+          "rawQueryText": "SELECT survey_date AS 'month', infl_exp_1y AS '1y expected %', infl_exp_1y_pctile AS '1y pctile', infl_exp_5y10y AS '5-10y expected %', infl_exp_5y10y_pctile AS '5-10y pctile', sentiment AS 'sentiment', sentiment_pool AS 'months ranked against' FROM board_inflation ORDER BY ts DESC LIMIT 1",
+          "queryText": "SELECT survey_date AS 'month', infl_exp_1y AS '1y expected %', infl_exp_1y_pctile AS '1y pctile', infl_exp_5y10y AS '5-10y expected %', infl_exp_5y10y_pctile AS '5-10y pctile', sentiment AS 'sentiment', sentiment_pool AS 'months ranked against' FROM board_inflation ORDER BY ts DESC LIMIT 1"
+        }
+      ]
+    }
+  ]
+}

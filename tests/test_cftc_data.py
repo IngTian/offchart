@@ -39,7 +39,7 @@ import pandas as pd
 import pytest
 
 import sources
-from lib import cftc_spec, metrics, segments, store, universe
+from lib import cftc_spec, metrics, segments, universe
 from lib.cftc_spec import NET_ZERO_TOL, OI_RESIDUAL_TOL
 from lib.schema import TableSchema
 from sources import cftc as cftc_source
@@ -770,7 +770,7 @@ def test_parse_rejects_impossible_and_unusable_rows():
 
 
 # --------------------------------------------------------------------------- #
-# lib/store and the Source contract
+# The Source contract
 # --------------------------------------------------------------------------- #
 def _frame(*rows) -> pd.DataFrame:
     return pd.DataFrame(
@@ -788,30 +788,12 @@ def _dummy_source(**over) -> Source:
     return Source(**{**kwargs, **over})
 
 
-def test_upsert_dedupes_on_the_key_with_last_wins(tmp_data_dir):
-    """CFTC revises already-published weeks, so ingest re-fetches an overlapping
-    window every run. Last-wins is what makes that pick up the revision instead
-    of storing the week twice."""
-    incoming = _frame(
-        ("2026-08-18", "20974+", "dealer", 10, 4, 300000),
-        ("2026-08-25", "20974+", "dealer", 20, 5, 300000),
-        ("2026-08-25", "20974+", "dealer", 21, 5, 300000),  # same key, later row wins
-    )
-    first = store.upsert("t", incoming, PRIMARY_KEY, sort_key=PRIMARY_KEY)
-    assert first["rows_total"] == 2
-    assert store.read("t")["long"].tolist() == [10, 21]
-
-    revision = _frame(("2026-08-25", "20974+", "dealer", 99, 5, 300000))
-    second = store.upsert("t", revision, PRIMARY_KEY, sort_key=PRIMARY_KEY)
-    assert (second["rows_new"], second["rows_revised"], second["rows_total"]) == (0, 1, 2)
-    assert store.read("t")["long"].tolist() == [10, 99]
-
-
 def test_sort_key_must_lead_with_the_date_column():
-    """Sorting code-first makes a weekly append rewrite the middle of every
-    market's run: ~2.54 MB of .git growth per commit against ~5.3 KB date-first,
-    a factor of ~480 (measured, see lib/store). Asserted rather than trusted
-    because the tuple is easy to reorder and nothing else would complain."""
+    """The git-churn reason for this expired with the parquet store; the rule did
+    not. sort_key[0] is the column scripts/ingest reads to compute the incremental
+    fetch floor, and it is the column that becomes `ts` in the serving tables.
+    Deleting a check because its original justification lapsed is the mistake
+    available here."""
     with pytest.raises(ValueError, match="lead with the date column"):
         _dummy_source(sort_key=("market_code", "report_date", "cohort"))
     with pytest.raises(ValueError):
@@ -821,57 +803,6 @@ def test_sort_key_must_lead_with_the_date_column():
         assert src.sort_key[0].endswith("date"), f"{src.id} sorts on {src.sort_key[0]} first"
 
 
-def test_tighten_never_turns_a_null_trader_count_into_zero(tmp_data_dir):
-    """A null per-cohort trader count co-occurs with a NONZERO position, so 0
-    would turn "not published" into "no firms hold this" and manufacture a
-    division by zero downstream. Also pinned: counts narrow to nullable Int32 and
-    not to float32, which only represents integers exactly to 2**24 while open
-    interest reaches 25,702,684."""
-    frame = _frame(
-        ("2026-08-18", "20974+", "dealer", 10, 4, 25_702_684),
-        ("2026-08-25", "20974+", "dealer", 20, None, 25_702_684),
-    )
-    tight = store._tighten(frame)
-    assert tight["traders_long"].tolist()[0] == 4
-    assert pd.isna(tight["traders_long"].iloc[1])
-    assert str(tight["open_interest"].dtype) == "Int32"
-    assert int(tight["open_interest"].iloc[0]) == 25_702_684
-
-    # ... and it survives the parquet round trip, which is where it matters.
-    store.upsert("t", frame, PRIMARY_KEY, sort_key=PRIMARY_KEY)
-    back = store.read("t")
-    assert back["traders_long"].isna().tolist() == [False, True]
-    # Date columns stay plain strings: pd.to_datetime on an unordered Categorical
-    # produces something whose .max() raises, and every caller would have to know.
-    assert not isinstance(back["report_date"].dtype, pd.CategoricalDtype)
-
-
-def test_writing_the_same_frame_twice_produces_identical_bytes(tmp_data_dir):
-    """This is what makes "skip the commit when nothing changed" work. Without it
-    the ingest job commits ~115 MB of identical-in-content parquet every day.
-    Byte-determinism is a pyarrow property, which is why requirements.txt pins it
-    exactly rather than with a floor."""
-    frame = _frame(
-        ("2026-08-18", "20974+", "dealer", 10, 4, 300000),
-        ("2026-08-25", "20974+", "dealer", 20, None, 300000),
-    )
-    first = store.upsert("a", frame, PRIMARY_KEY, sort_key=PRIMARY_KEY)
-    again = store.upsert("a", frame, PRIMARY_KEY, sort_key=PRIMARY_KEY)
-    other = store.upsert("b", frame, PRIMARY_KEY, sort_key=PRIMARY_KEY)
-
-    assert first["changed"] is True
-    assert again["changed"] is False, "a no-op rewrite must be byte-identical"
-
-    def digest(source_id: str) -> str:
-        return hashlib.sha256(store.path_for(source_id).read_bytes()).hexdigest()
-
-    assert digest("a") == digest("b")
-    assert first["bytes"] == other["bytes"]
-
-
-# --------------------------------------------------------------------------- #
-# lib/universe -- the supersession map that stops a double count
-# --------------------------------------------------------------------------- #
 def test_superseded_by_covers_all_six_legs():
     """REGRESSION. 124608 (MICRO E-MINI DJIA) was missing from this map, and its
     absence double-counts DJIA exposure: the Micro leg is already inside 12460+

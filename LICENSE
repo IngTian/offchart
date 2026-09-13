@@ -1,0 +1,59 @@
+MIT License
+
+Copyright (c) 2026 Zeying Tian
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+THIS LICENCE COVERS THE CODE ONLY. IT DOES NOT AND CANNOT COVER THE DATA.
+
+None of the data this repository fetches belongs to its author, so none of it is
+licensed here. What follows is what was checked, so that a downstream user knows
+which terms apply to what. The authoritative quotes, with URLs, are in the
+docstring of each module under sources/.
+
+  CFTC Commitments of Traders (cftc_*)
+      A publication of the U.S. Commodity Futures Trading Commission. US
+      Government work, public domain. Freely usable and redistributable.
+
+  Daily closes (prices)
+      Yahoo Finance's chart endpoint. Not a documented public API; subject to
+      Yahoo's terms of service. Used here at low volume for personal research.
+      This repository redistributes none of it.
+
+  OpenRouter model pricing (openrouter_pricing)
+      OpenRouter's public models endpoint. The committed CSVs under
+      data/snapshots/openrouter_pricing/ are the only data files in this
+      repository, and they are published prices rather than proprietary figures.
+
+  University of Michigan Surveys of Consumers (umich_sca)
+      NOT redistributed here, deliberately and by construction. The University
+      of Michigan grants permission-free USE of the tables published on its
+      public site and separately prohibits redistribution without express
+      written consent. This repository fetches these tables into a local,
+      version-control-excluded database and charts them; it commits no copy of
+      them, and the test fixture's slice of this source is fabricated rather
+      than sampled. Attribution, as the University requests:
+
+          University of Michigan, Survey Research Center, Surveys of Consumers.
+
+If you add a source, record its terms on the Source declaration. A source marked
+redistributable=False is forbidden by the test suite from having any committed
+artefact, which is what keeps this section true rather than aspirational.

@@ -1,14 +1,12 @@
 name: tests
 
-# Runs on every push, separately from ingest.
+# Runs on every push. The snapshot workflow runs the suite too, but only on its own
+# schedule and on pushes touching a few paths, so this is the one that covers a change
+# anywhere else.
 #
-# The ingest workflow also runs the suite, but only on its own schedule and on
-# pushes that touch sources/, lib/ or scripts/ingest.py -- so a change to a panel
-# or to lib/charts.py would never have been tested before this file existed.
-#
-# The suite is ~2 seconds and needs no network and no data/: it reads the 596 KB
-# committed slice in tests/fixtures/. That matters here, because it means CI does
-# not have to ingest 115 MB before it can tell you a display rule broke.
+# ~2 seconds, no network, and no dependence on data/: the suite reads the 5 MB
+# committed slice in tests/fixtures/fixture.sqlite. That is what lets CI tell you a
+# causality rule broke without fetching a single row.
 #
 # What it actually guards, all of which this repo has regressed on at least once:
 #   - the OI residual is rounding, not an unpublished non-reportable spread
@@ -16,7 +14,9 @@ name: tests
 #   - concentration ratios divide by the side total, not by open interest
 #   - every ranking is causal, proved by truncation, with non-causal controls
 #     asserted to FAIL so the check cannot rot into a tautology
-#   - no board reaches past lib/charts.py to build a dual axis
+#   - no dashboard query ranks in SQL, and none reads an archive table
+#   - a source we may not redistribute has no committed artefact, and a source we
+#     cannot re-fetch does -- both asserted by asking the ignore rules directly
 
 on:
   push:

@@ -366,7 +366,7 @@ def test_net_and_gross() -> None:
 def test_gross_is_negative_on_the_pre_1999_legacy_nonrept_rows() -> None:
     """"gross" is in UNSIGNED_KINDS, so is_ratio_safe LICENSES a percent change on
     it. That licence is a statement about the QUANTITY, and the DATA breaks the
-    premise: measured over all seven parquets, long + short is NEGATIVE on 46 rows
+    premise: measured over all seven CFTC datasets, long + short is NEGATIVE on 46 rows
     -- 29 in legacy_fut (1986-01-15..1997-12-19) and 17 in legacy_futopt
     (1998-07-07..1998-12-29), every one the `nonrept` cohort, worst -228,000
     contracts on code 005601 in 1986. The row below is published 148776 /
@@ -426,7 +426,7 @@ def test_directional_purity_is_signed_and_bounded() -> None:
 def test_avg_position_per_trader_null_and_zero_traders_give_nan(dtype: str) -> None:
     """A null trader count is a real position over an UNKNOWN divisor. It must be
     NaN, must not be inf, and must not emit a divide warning. Three dtypes because
-    the column arrives as nullable Int32 from parquet and as float or object after
+    the column arrives as nullable Int32 from the store and as float or object after
     a reindex.
 
     Naming the population, because metrics.py's "about a third of the board" is one

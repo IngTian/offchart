@@ -34,7 +34,7 @@ from typing import Any
 from lib import cftc_spec
 
 BASE = "https://publicreporting.cftc.gov/resource"
-UA = {"User-Agent": "watchboard research (personal, low volume)"}
+UA = {"User-Agent": "offchart research (personal, low volume)"}
 
 #: Socrata imposes no $limit ceiling on these datasets -- $limit=300000 returned
 #: all 288,151 legacy_fut rows in a single 7.2s response -- so there is no need

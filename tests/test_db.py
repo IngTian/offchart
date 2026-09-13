@@ -1,14 +1,14 @@
-"""The SQLite store, and the round trip that proves it is faithful.
+"""The SQLite store: the round trip, and the hazards a store can silently undo.
 
-The most valuable test here is test_round_trips_every_source: for each source, load
-the committed parquet fixture through the real upsert and read it back, and assert it
-equals the parquet frame. While both stores exist, that equality is what licenses
-deleting the parquet one. It is temporary by design and should be removed with the
-parquet path, not kept as decoration.
+test_round_trips_every_source takes each source out of the committed fixture, writes
+it through the real upsert into a fresh database, reads it back and asserts the frames
+are equal. Dtypes included -- that is the part worth having, because the frames carry
+nullable integers and categoricals, and a store that loses either produces a plausible
+number rather than an error.
 
-The rest pin hazards that lib/store had solved and that a different medium can undo:
-a null count becoming zero, an integer being stored as a float, LAST WINS, and a
-partial frame blanking columns it does not carry.
+The rest are named hazards, each of which has bitten this repo or its predecessor: a
+null count arriving as zero, a count stored as a float, a revision duplicating a row
+instead of overwriting it, and a partial frame blanking the columns it does not carry.
 """
 from __future__ import annotations
 
@@ -23,16 +23,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from lib import db  # noqa: E402
-from sources import all_sources, get  # noqa: E402
-
-FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
-
-
-def _fixture(source_id: str) -> pd.DataFrame:
-    path = FIXTURE_DIR / f"{source_id}.parquet"
-    if not path.exists():
-        pytest.skip(f"no committed fixture for {source_id}")
-    return pd.read_parquet(path)
+from sources import get  # noqa: E402
+from tests.conftest import FIXTURE_SOURCES  # noqa: E402
 
 
 @pytest.fixture
@@ -45,19 +37,13 @@ def con(tmp_path):
     c.close()
 
 
-FIXTURE_SOURCES = [
-    s.id for s in all_sources()
-    if (FIXTURE_DIR / f"{s.id}.parquet").exists()
-]
-
-
 # ------------------------------------------------------- the round trip
 
 @pytest.mark.parametrize("source_id", FIXTURE_SOURCES)
-def test_round_trips_every_source(con, source_id: str) -> None:
-    """Parquet in, SQLite out, same frame. The whole licence for the migration."""
+def test_round_trips_every_source(con, source_id: str, _session_frames) -> None:
+    """Frame in, frame out, dtypes included. The store's core promise."""
     src = get(source_id)
-    original = _fixture(source_id)
+    original = _session_frames[source_id].copy()
     report = db.upsert(con, source_id, original, src.key)
 
     assert report["rows_total"] == len(original)
@@ -65,9 +51,8 @@ def test_round_trips_every_source(con, source_id: str) -> None:
     assert report["rows_revised"] == 0
 
     back = db.read_frame(con, source_id, like=original)
-    # Both sides sorted by the declared key: the database has no inherent row order
-    # and neither does the parquet once it round-trips, so comparing unsorted would
-    # be testing an accident.
+    # Both sides sorted by the declared key: a table has no inherent row order, so
+    # comparing unsorted would be testing an accident of insertion order.
     keys = list(src.key)
     left = original.sort_values(keys).reset_index(drop=True)
     right = back.sort_values(keys).reset_index(drop=True)
@@ -75,11 +60,11 @@ def test_round_trips_every_source(con, source_id: str) -> None:
 
 
 @pytest.mark.parametrize("source_id", FIXTURE_SOURCES)
-def test_latest_date_agrees_with_the_frame(con, source_id: str) -> None:
+def test_latest_date_agrees_with_the_frame(con, source_id: str, _session_frames) -> None:
     """The incremental fetch floor is computed from this, so a wrong answer silently
     re-fetches everything or, worse, skips a week."""
     src = get(source_id)
-    frame = _fixture(source_id)
+    frame = _session_frames[source_id].copy()
     db.upsert(con, source_id, frame, src.key)
 
     column = src.sort_key[0]
@@ -90,9 +75,7 @@ def test_latest_date_agrees_with_the_frame(con, source_id: str) -> None:
 # ------------------------------------------------------- the null hazard
 
 def test_a_null_count_never_becomes_zero(con) -> None:
-    """The hazard lib/store solved, in a new medium.
-
-    Not hypothetical: 81,065 of 232,755 rows in cftc_tff_fut carry a null
+    """Not hypothetical: 81,065 of 232,755 rows in cftc_tff_fut carry a null
     traders_long beside a positive long. A null that arrives as 0 asserts that nobody
     held the position, which is a different and confident claim.
     """
@@ -129,8 +112,8 @@ def test_integer_columns_are_stored_as_integers(con) -> None:
 
 
 def test_a_strict_table_refuses_a_fractional_integer(con) -> None:
-    """The reason the forty lines of dtype-sniffing in lib/store can go: the engine
-    refuses the narrowing instead of us detecting it."""
+    """The reason the store needs no dtype-sniffing layer: the engine refuses the
+    narrowing instead of code having to detect it."""
     frame = pd.DataFrame({"d": ["2026-01-06"], "n": pd.array([1], dtype="Int64")})
     db.upsert(con, "t_strict", frame, ("d",))
     with pytest.raises(sqlite3.IntegrityError):
@@ -156,9 +139,7 @@ def test_last_wins_on_the_key(con) -> None:
 
 
 def test_an_identical_reingest_reports_no_value_change(con) -> None:
-    """This is what the byte digest in lib/store was a proxy for, said directly.
-
-    On a full-refresh source every row is 'revisited' on every run, so that count
+    """On a full-refresh source every row is 'revisited' on every run, so that count
     cannot tell 'upstream republished the same numbers' from 'upstream revised a
     figure'. rows_value_changed can, which is the distinction sources/umich's
     revision guard exists to report.
@@ -210,8 +191,8 @@ def test_an_empty_frame_is_a_no_op(con) -> None:
 
 
 def test_reading_an_absent_source_is_empty_not_an_error(con) -> None:
-    """Same contract as the parquet store: a source that has never been ingested reads
-    as empty so the board can say 'not ingested yet' rather than crashing."""
+    """A source that has never been ingested reads as empty rather than raising, so
+    `make status` can report 'not ingested' and a build can skip it."""
     assert db.read_frame(con, "never_ingested").empty
     assert db.has_rows(con, "never_ingested") is False
     assert db.latest_date(con, "never_ingested") is None
@@ -224,8 +205,9 @@ def test_a_source_id_that_is_not_a_safe_identifier_is_refused() -> None:
 
 
 def test_the_database_file_is_gitignored() -> None:
-    """It will contain umich_sca, which is licensed for use and not redistribution --
-    the same rule tests/test_sources.py enforces for that source's parquet."""
+    """It contains umich_sca, which is licensed for use and not for redistribution.
+    tests/test_sources.py asserts the same thing plus its converse -- that
+    data/snapshots/ is NOT ignored -- and the pair is the whole rule."""
     import subprocess
 
     rel = db.DB_PATH.relative_to(ROOT).as_posix()

@@ -1,8 +1,8 @@
 """Regenerate the committed test slice from data/. Run: python -m tests.fixtures.build
 
 The suite must never touch the network and must finish in seconds, so it runs
-against a small committed slice of the real parquet files rather than against
-data/ (115 MB) or a mock. A mock would be worse than useless here: every bug this
+against a small committed slice of the real store rather than against data/ (a
+1.6 GB database) or a mock. A mock would be worse than useless here: every bug this
 suite defends against is a property of the REAL published figures -- rounding
 that breaks exact equality, nulls that co-occur with nonzero positions, a
 contract re-basing mid-history, two markets sharing one name. A hand-written
@@ -72,11 +72,16 @@ to the real last report.
 openrouter_pricing is copied whole -- it is snapshot-only and currently holds one
 snapshot date, so there is nothing to trim.
 
-The slice is written through lib.store.upsert with the real Source key and sort
-order, so it has production dtypes (Int32 that keeps its nulls, dictionary-
-encoded strings, plain-string dates) and production row-group layout. A fixture
-written by a different code path would not exercise the dtypes the app sees.
-Total on disk is ~0.5 MB.
+The slice is read from the real SQLite store and written back through the real
+lib.db.upsert with each Source's declared key, into ONE committed file --
+tests/fixtures/fixture.sqlite. A fixture written by a different code path would not
+exercise the schema the tests then read through.
+
+Cost of one binary file: SQLite makes no byte-determinism promise, so a regeneration
+is a fresh blob with no useful git delta rather than a small diff. That is accepted
+because the file is small and regenerated rarely, and because the alternatives are
+worse -- CSV loses the nullable-integer and category dtypes several tests depend on,
+and per-source files multiply the same problem.
 """
 from __future__ import annotations
 
@@ -92,10 +97,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import sources  # noqa: E402
-from lib import store  # noqa: E402
+from lib import db  # noqa: E402
 
 #: (first report to keep, last report to keep), inclusive; None means unbounded.
 FULL: tuple[str | None, str | None] = (None, None)
+
+#: How many trailing snapshot dates a snapshot-only source contributes.
+SNAPSHOT_TAIL = "tail:2"
 
 #: source_id -> {market_code: window}. `None` instead of a dict means "every row",
 #: for a source that is already tiny. See the module docstring for what each code
@@ -113,14 +121,31 @@ SELECTION: dict[str, dict[str, tuple[str | None, str | None]] | None] = {
     },
     "cftc_disagg_fut": {"088691": ("2016-01-01", None)},  # residual exactly zero
     "cftc_supp_cit": {"001602": ("2016-01-01", None)},  # worst rounding, no conc
-    "openrouter_pricing": None,
+    # Snapshot-only, and the tests need its SHAPE (a snapshot_date key, per-token
+    # and per-million columns, nulls) rather than its history. Trimmed to the last
+    # two dates: whole, it is 5,617 rows of long model identifiers and accounts for
+    # most of the fixture's bytes. Its real history lives in data/snapshots/, which
+    # is what must not be trimmed.
+    "openrouter_pricing": SNAPSHOT_TAIL,
 }
 
 
-def _slice(source_id: str, windows: dict[str, tuple[str | None, str | None]] | None) -> pd.DataFrame:
-    df = pd.read_parquet(REPO_ROOT / "data" / f"{source_id}.parquet")
+#: The committed fixture. One file, all sources, built from the real store.
+FIXTURE_DB = FIXTURE_DIR / "fixture.sqlite"
+
+
+def _slice(source_id: str, windows, live) -> pd.DataFrame:
+    df = db.read_frame(live, source_id)
     if df.empty:
-        raise SystemExit(f"{source_id}: data/ is empty -- run scripts/ingest first")
+        raise SystemExit(
+            f"{source_id}: the store is empty -- run `make backfill` first"
+        )
+    if isinstance(windows, str) and windows.startswith("tail:"):
+        # A source with no market_code, trimmed by trailing dates instead.
+        n = int(windows.split(":")[1])
+        date_col = sources.get(source_id).sort_key[0]
+        keep = sorted(df[date_col].astype(str).unique())[-n:]
+        return df[df[date_col].astype(str).isin(keep)].copy()
     if windows is None:
         out = df.copy()
     else:
@@ -134,7 +159,7 @@ def _slice(source_id: str, windows: dict[str, tuple[str | None, str | None]] | N
         for c, (lo, hi) in windows.items():
             m = code == c
             if not m.any():
-                raise SystemExit(f"{source_id}: code {c!r} absent from data/")
+                raise SystemExit(f"{source_id}: code {c!r} absent from the store")
             if lo:
                 m &= date >= lo
             if hi:
@@ -143,8 +168,10 @@ def _slice(source_id: str, windows: dict[str, tuple[str | None, str | None]] | N
                 raise SystemExit(f"{source_id}: code {c!r} has no rows in {lo}..{hi}")
             keep |= m
         out = df[keep].copy()
-    # Drop the stale category sets so store._tighten rebuilds them from the
-    # slice alone.
+    # Drop the stale category sets: a comparison that leaves market_code categorical
+    # carries the full 951-code category set into the slice, which then disagrees with
+    # a frame read back out of the fixture and makes an equality assertion fail on
+    # metadata rather than on data.
     cats = [c for c in out.columns if isinstance(out[c].dtype, pd.CategoricalDtype)]
     return out.astype({c: "object" for c in cats})
 
@@ -154,7 +181,7 @@ def _umich_fabricated() -> pd.DataFrame:
 
     Every other fixture here is a window cut out of data/. This one cannot be: the
     University of Michigan permits use of its public tables but not redistribution,
-    which is why data/umich_sca.parquet is gitignored (see sources/umich). Copying
+    which is why the store is never committed (see sources/umich). Copying
     even a few hundred of their values into a committed fixture would be exactly the
     redistribution the gitignore exists to avoid.
 
@@ -214,37 +241,41 @@ def _umich_fabricated() -> pd.DataFrame:
 
 
 def build() -> list[dict]:
+    """Read the real store, write the committed fixture. One file out."""
+    FIXTURE_DB.unlink(missing_ok=True)
+    live = db.connect(read_only=True)
+    fixture = db.connect(FIXTURE_DB)
     reports = []
-    for source_id, windows in SELECTION.items():
-        src = sources.get(source_id)
-        frame = _slice(source_id, windows)
-        target = FIXTURE_DIR / f"{source_id}.parquet"
-        target.unlink(missing_ok=True)  # full rewrite: a dropped code must vanish
-        reports.append(store.upsert(source_id, frame, src.key, sort_key=src.sort_key))
+    try:
+        for source_id, windows in SELECTION.items():
+            src = sources.get(source_id)
+            frame = _slice(source_id, windows, live)
+            reports.append(db.upsert(fixture, source_id, frame, src.key))
 
-    src = sources.get("umich_sca")
-    (FIXTURE_DIR / "umich_sca.parquet").unlink(missing_ok=True)
-    reports.append(
-        store.upsert("umich_sca", _umich_fabricated(), src.key, sort_key=src.sort_key)
-    )
+        src = sources.get("umich_sca")
+        reports.append(
+            db.upsert(fixture, "umich_sca", _umich_fabricated(), src.key)
+        )
+        fixture.commit()
+        # VACUUM before this becomes a committed artefact. SQLite does not return
+        # freed pages to the filesystem on its own, so trimming rows without this
+        # leaves the file at its high-water mark -- which for a file that goes into
+        # version control is the size that matters.
+        fixture.execute("VACUUM")
+        # Leave WAL so the artefact is one file with no -wal/-shm sidecars beside it.
+        db.finalize_for_serving(fixture)
+    finally:
+        fixture.close()
+        live.close()
     return reports
 
 
 def main() -> None:
-    # store writes to store.DATA_DIR; point it here rather than reimplementing
-    # the write, so the fixture and the real files come off one code path.
-    original = store.DATA_DIR
-    store.DATA_DIR = FIXTURE_DIR
-    try:
-        reports = build()
-    finally:
-        store.DATA_DIR = original
-
-    total = 0
+    reports = build()
     for r in reports:
-        total += r["bytes"]
-        print(f"  {r['source']:<22} {r['rows_total']:>7,} rows  {r['bytes'] / 1024:>7.1f} KB")
-    print(f"  {'TOTAL':<22} {'':>7}       {total / 1024:>7.1f} KB")
+        print(f"  {r['source']:<22} {r['rows_total']:>7,} rows")
+    size = FIXTURE_DB.stat().st_size / 1024
+    print(f"  {'TOTAL':<22} {'':>7}       {size:>7.1f} KB  -> {FIXTURE_DB.name}")
 
 
 if __name__ == "__main__":

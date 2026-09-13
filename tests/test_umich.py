@@ -5,9 +5,11 @@ phone-era history. It produces a number that looks like a percentile, is wrong b
 roughly eighteen points, and cannot be spotted by eye because UMich deliberately
 smeared the break so the level line has no step.
 
-Mostly synthetic frames, because data/umich_sca.parquet is gitignored (see
-sources/umich) and these must pass on a fresh clone. The one data-backed test skips
-when the file is absent.
+Synthetic frames throughout, because nothing UMich publishes may be committed (see
+sources/umich) and these must pass on a fresh clone. Even the "payload" test at the
+bottom reads the FABRICATED umich_sca slice from tests/fixtures: what it checks is
+that the boundaries in lib/umich_spec agree with the shape this parser produces,
+which is a property of this repo rather than of their numbers.
 """
 from __future__ import annotations
 
@@ -20,7 +22,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from lib import metrics, store, umich_spec  # noqa: E402
+from lib import db, metrics, umich_spec  # noqa: E402
 from sources import umich  # noqa: E402
 
 
@@ -192,44 +194,12 @@ def test_caveats_state_the_two_things_most_likely_to_mislead() -> None:
     assert "-6.6" in blob or "6.6" in blob, "the measured mode-change shift must be stated"
 
 
-# ------------------------------------------------------------ board separation
-
-def test_the_michigan_board_is_standalone_and_carries_no_cftc_data() -> None:
-    """The survey is not futures positioning and must not be mixed into that view.
-
-    Asserted rather than left to care, because the cheapest way to "add a source" is
-    to hang it off the board that already exists, and that would put a monthly
-    household survey on an axis beside weekly trader positions.
-    """
-    import panels
-
-    boards = {b.id: b for b in panels.all_boards()}
-    assert "inflation" in boards, "the Michigan board must be its own board"
-
-    inflation = set(boards["inflation"].sources)
-    positioning = set(boards["positioning"].sources)
-    assert inflation == {"umich_sca"}
-    assert not (positioning & inflation), "the two boards must share no source"
-    assert not any(s.startswith("cftc") for s in inflation)
-    assert "umich" not in " ".join(positioning)
-    assert boards["inflation"].group != boards["positioning"].group, (
-        "they belong in different sidebar groups; they answer different questions"
-    )
-
-    src = (ROOT / "panels" / "inflation.py").read_text().lower()
-    assert "cftc" not in src, "the Michigan board must not reach for CFTC data"
-
-
 # ------------------------------------------------ against the real file, if present
 
-@pytest.mark.skipif(
-    not store.exists("umich_sca"),
-    reason="data/umich_sca.parquet is gitignored; run scripts.ingest --source umich_sca",
-)
-def test_boundaries_match_the_real_payload() -> None:
+def test_boundaries_match_the_real_payload(_session_frames) -> None:
     """Each boundary was read out of a UMich document. The documents can be right
     about history and still not describe the file that shipped."""
-    frame = store.read("umich_sca")
+    frame = _session_frames["umich_sca"]
     dates = pd.to_datetime(frame["survey_date"])
 
     px5_after = frame.loc[dates >= pd.Timestamp("1990-04-01"), "infl_exp_5y10y"]

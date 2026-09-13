@@ -1,0 +1,216 @@
+{
+  "uid": "offchart-positioning",
+  "title": "Positioning",
+  "description": "CFTC Commitments of Traders. Net position of a cohort group as a share of open interest, with the underlying price above and open interest below. Percentile ranks are causal and precomputed in pandas by scripts/build -- see that module for why they are not SQL.",
+  "tags": ["offchart", "cftc"],
+  "timezone": "utc",
+  "editable": false,
+  "graphTooltip": 2,
+  "schemaVersion": 39,
+  "refresh": "",
+  "time": { "from": "now-5y", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "dataset",
+        "label": "Report family",
+        "type": "query",
+        "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
+        "query": "SELECT DISTINCT dataset FROM board_positioning ORDER BY dataset",
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false,
+        "current": { "text": "cftc_tff_fut", "value": "cftc_tff_fut" }
+      },
+      {
+        "name": "market",
+        "label": "Market",
+        "type": "query",
+        "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
+        "query": "SELECT DISTINCT market_code FROM board_positioning WHERE dataset='$dataset' ORDER BY market_code",
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false,
+        "current": { "text": "20974+", "value": "20974+" }
+      },
+      {
+        "name": "group",
+        "label": "Cohort group",
+        "type": "query",
+        "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
+        "query": "SELECT DISTINCT cohort_group FROM board_positioning WHERE dataset='$dataset' ORDER BY cohort_group",
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false,
+        "current": { "text": "asset_mgr+lev_money", "value": "asset_mgr+lev_money" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Price ($market)",
+      "description": "The mapped underlying, sampled as-of each Tuesday report date, backward only and staleness-capped at 10 days. A price beside a position is contemporaneous with the position, not with the moment it was published.",
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "spanNulls": false,
+            "showPoints": "never",
+            "axisPlacement": "left",
+            "axisWidth": 80
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "hidden", "showLegend": false },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
+          "queryType": "time series",
+          "timeColumns": ["time"],
+          "rawQueryText": "SELECT ts/1000 AS time, price AS 'price' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' AND ts BETWEEN $__from AND $__to ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, price AS 'price' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' AND ts BETWEEN $__from AND $__to ORDER BY ts"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Net position as % of open interest",
+      "description": "Net (long minus short) of the selected cohort group, over the market's open interest. Dimensionless, so a contract re-specification cancels top and bottom.",
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 9 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": false,
+            "showPoints": "never",
+            "axisPlacement": "left",
+            "axisWidth": 80,
+            "thresholdsStyle": { "mode": "line" }
+          },
+          "unit": "percent",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "transparent", "value": null },
+              { "color": "text", "value": 0 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "hidden", "showLegend": false },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
+          "queryType": "time series",
+          "timeColumns": ["time"],
+          "rawQueryText": "SELECT ts/1000 AS time, share AS '% of open interest' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' AND ts BETWEEN $__from AND $__to ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, share AS '% of open interest' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' AND ts BETWEEN $__from AND $__to ORDER BY ts"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Open interest (contracts)",
+      "description": "On screen because a share can move when the cohort trades or when open interest does, and the share alone cannot say which.",
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 18 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "spanNulls": false,
+            "showPoints": "never",
+            "axisPlacement": "left",
+            "axisWidth": 80,
+            "axisSoftMin": 0
+          },
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "hidden", "showLegend": false },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
+          "queryType": "time series",
+          "timeColumns": ["time"],
+          "rawQueryText": "SELECT ts/1000 AS time, open_interest AS 'open interest' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' AND ts BETWEEN $__from AND $__to ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, open_interest AS 'open interest' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' AND ts BETWEEN $__from AND $__to ORDER BY ts"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Latest reading",
+      "description": "The percentile is causal -- each week ranked only against weeks up to and including itself -- and computed within the market's current contract-unit segment for open interest. n_pool is how many weeks the share's rank is measured against.",
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 24 },
+      "fieldConfig": {
+        "defaults": { "decimals": 2 },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "share pctile" },
+            "properties": [{ "id": "decimals", "value": 0 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "OI pctile" },
+            "properties": [{ "id": "decimals", "value": 0 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "weeks ranked against" },
+            "properties": [{ "id": "decimals", "value": 0 }]
+          }
+        ]
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
+          "queryType": "table",
+          "timeColumns": [],
+          "rawQueryText": "SELECT share AS '% of OI', share_pctile AS 'share pctile', oi_pctile AS 'OI pctile', chg_2w AS 'change over 2w', n_pool AS 'weeks ranked against' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' ORDER BY ts DESC LIMIT 1",
+          "queryText": "SELECT share AS '% of OI', share_pctile AS 'share pctile', oi_pctile AS 'OI pctile', chg_2w AS 'change over 2w', n_pool AS 'weeks ranked against' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' ORDER BY ts DESC LIMIT 1"
+        }
+      ]
+    }
+  ]
+}

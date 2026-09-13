@@ -58,8 +58,8 @@ class Source:
     group: str = "Other"
 
     #: WHAT THE UPSTREAM ALLOWS. Not decoration -- `redistributable` decides
-    #: whether this source's parquet may be committed, and that is enforced by a
-    #: test rather than left to whoever adds the next source.
+    #: whether this source may have a COMMITTED artefact at all, and that is
+    #: enforced by a test rather than left to whoever adds the next source.
     #:
     #: Every source in this repo up to now has been US federal work (CFTC) or an
     #: openly published API, so "commit the data" was free and the question never
@@ -67,12 +67,17 @@ class Source:
     #: copyright over the Surveys of Consumers tables, grants permission-free USE
     #: of the public ones, and separately prohibits redistribution without written
     #: consent. Those two grants are in tension, and the honest reading is that
-    #: charting is allowed and mirroring is not. A source that is not
-    #: redistributable therefore ingests to a gitignored parquet: the board still
-    #: only ever reads from disk, but a fresh clone has to fetch for itself.
+    #: charting is allowed and mirroring is not. Such a source lands only in the
+    #: ignored database: a fresh clone has to fetch it for itself.
     license: str = "unspecified"
 
-    #: False -> data/<id>.parquet must be gitignored. See license above.
+    #: False -> this source may have NO committed artefact, which today means no
+    #: directory under data/snapshots/. The database is never committed either
+    #: way, so this flag is about what reaches version control. See license
+    #: above, and note the separate and opposite rule on `backfillable`: a source
+    #: that cannot be re-fetched MUST have committed snapshots. A source that was
+    #: both backfillable=False and redistributable=False would be unstorable, and
+    #: tests/test_sources.py would fail on it from both directions at once.
     redistributable: bool = True
 
     #: Attribution the upstream requires, verbatim. Rendered next to the charts.

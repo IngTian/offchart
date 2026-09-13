@@ -1,0 +1,105 @@
+name: snapshot
+
+# WHAT THIS WORKFLOW IS FOR, AFTER THE SQLITE MIGRATION
+#
+# It used to pull every source and commit the parquet files back to the repo, which
+# made the repo itself the database. It is not that any more, and the reason is worth
+# stating because the change looks like a reduction in scope and is actually a
+# correction.
+#
+# The store is now one gitignored SQLite file, rebuilt on demand by `make pull` on
+# whatever machine wants to look at the data. So there is no committed state for a CI
+# run to be incremental against: a CFTC pull here would start from an empty database,
+# fetch the full ~900 MB history, and then throw it away when the runner is destroyed.
+# Every one of those sources is backfillable, so nothing is lost by not doing it.
+#
+# What is NOT recoverable is the snapshot-only source. openrouter_pricing serves
+# "today" with no archive, so a day nobody ran the job is a permanent hole in the
+# series. That is the entire remaining job of this workflow, and it is why the
+# schedule stays daily: not to keep charts fresh, but because the alternative to
+# running today is never having today.
+#
+# Its output is data/snapshots/<source>/<date>.csv -- one immutable file per date,
+# committed. Written BEFORE the database is touched (see scripts/ingest), so the
+# irreplaceable bytes do not depend on a database write succeeding.
+#
+# 20:15 UTC == 16:15 ET during EDT, 15:15 ET during EST.
+
+on:
+  schedule:
+    - cron: "15 20 * * *"
+  workflow_dispatch:
+  push:
+    # main ONLY, and the restriction is load-bearing. This job commits a CSV, so on a
+    # feature branch whose date is not yet captured it would write a snapshot onto that
+    # branch -- which then has to be merged, or is silently discarded when the branch is
+    # deleted. That is a way to lose the one thing here that cannot be re-fetched.
+    # Snapshots belong on the branch the daily schedule runs against, and nowhere else.
+    # The tests workflow already runs on every branch, so nothing is left unchecked.
+    branches: [main]
+    paths:
+      - "sources/**"
+      - "lib/snapshots.py"
+      - "scripts/ingest.py"
+      - ".github/workflows/snapshot.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: snapshot
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # --snapshot-only selects by the `backfillable` flag rather than by source id,
+      # so registering a second unbackfillable source needs no edit here. That is the
+      # point: for this class of source, "we forgot to add it to the cron" and "the
+      # data does not exist" are the same sentence.
+      - name: Capture today's snapshot of every unbackfillable source
+        run: python -m scripts.ingest --snapshot-only
+
+      - name: Tests
+        run: python -m pytest -q
+
+      - name: Commit the new snapshot
+        run: |
+          git config user.name  "offchart-bot"
+          git config user.email "offchart-bot@users.noreply.github.com"
+          # ONLY data/snapshots/. The database is gitignored, so `git add data/` would
+          # be a no-op today -- but it would also be the line that silently starts
+          # committing a 1.6 GB binary the day somebody relaxes the ignore rule.
+          git add data/snapshots/
+          if git diff --staged --quiet; then
+            echo "no new snapshot (already captured for this date)"
+          else
+            git commit -m "snapshot: $(date -u +%Y-%m-%d)"
+            git push
+          fi
+
+  # Separate job on purpose: it needs no data and no commit rights, and it answers a
+  # different question. It is the monitor for the failure mode with no symptom -- a
+  # CFTC column that still exists but now means something else, which produces a
+  # plausible chart of a wrong number and raises nothing anywhere.
+  feeds:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Verify the CFTC field maps against the live API
+        run: python -m scripts.verify_spec --rows 2000
