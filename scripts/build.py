@@ -217,10 +217,20 @@ def _swap_in(con, table: str, frame: pd.DataFrame, key: tuple[str, ...]) -> None
 
     Built into <table>_new and renamed inside one transaction. Rebuilding in place
     would let Grafana read a half-written table and draw intermittently blank panels.
+
+    The explicit BEGIN is load-bearing and not decoration. Python's sqlite3 opens a
+    transaction implicitly before DML but NOT before DDL, so `with con:` around a DROP
+    and a RENAME autocommits each statement as it runs and has nothing to roll back --
+    a crash between the two left NO serving table, and every panel on the board read
+    `no such table: board_positioning` until someone reran the build. SQLite does DDL
+    transactionally without complaint; only the driver needed telling. Proved by
+    tests/test_build.py, which fails the whole way back to an empty database without
+    this line.
     """
     staging = f"{table}_new"
     con.execute(f'DROP TABLE IF EXISTS "{staging}"')
     db.upsert(con, staging, frame, key)
+    con.execute("BEGIN IMMEDIATE")
     with con:
         con.execute(f'DROP TABLE IF EXISTS "{table}"')
         con.execute(f'ALTER TABLE "{staging}" RENAME TO "{table}"')
