@@ -32,9 +32,24 @@ venv
 # one immutable CSV per snapshot date. tests/test_sources.py asserts both directions
 # of this via `git check-ignore` -- that the database is ignored and that
 # data/snapshots/ is NOT -- because a comment cannot catch either mistake.
-data/*.sqlite
-data/*.sqlite-wal
-data/*.sqlite-shm
+#
+# The pattern describes the SHAPE of a store, not the default path, because every
+# script takes `--db` (scripts/ingest.py, scripts/build.py, scripts/status.py). An
+# earlier `data/*.sqlite` matched one directory level and one extension, so a store
+# written to `data/offchart.db`, `data/offchart.sqlite3`, `data/sub/offchart.sqlite`
+# or a repo-root `scratch.sqlite` held every restricted row and was committable with
+# the whole suite green. Ignoring by extension anywhere in the tree is the version
+# that matches the rule: a store is defined by what it contains, not by its path.
+*.sqlite*
+*.db
+*.db-wal
+*.db-shm
+
+# ...with one deliberate exception: the corpus the suite runs against. It is safe to
+# commit only because its restricted slice is FABRICATED rather than sampled -- see
+# tests/fixtures/build.py. tests/test_sources.py asserts this file stays committable,
+# so closing the hole above cannot silently un-commit the fixture.
+!tests/fixtures/fixture.sqlite
 
 # The parquet store this repo used until the SQLite migration. Ignored rather than
 # merely deleted: `make backfill` no longer writes these, but a checkout of an older

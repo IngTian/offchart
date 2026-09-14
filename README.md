@@ -13,7 +13,7 @@ out to cost more than the data ever did, and Grafana already does crosshairs, zo
 fullscreen and export better than a bespoke one will.
 
 ```
-make conda-env   # once: a conda env with the two dependencies (or `make venv`)
+make venv        # once: .venv with the two dependencies, built by uv
 make backfill    # once: full history into data/offchart.sqlite (~5 min, ~900 MB fetched)
 make grafana     # start Grafana -> http://localhost:3000
 make pull        # from then on, the only command you need
@@ -63,29 +63,24 @@ one canvas invites reading a relationship that nothing here tests.
 
 ## 1. Install
 
-Needs Python 3.12+ and Docker (for Grafana). Two Python dependencies: pandas, and pytest
-for the suite. Everything else — SQLite, HTTP — is standard library.
+Needs [uv](https://docs.astral.sh/uv/) and Docker (for Grafana). Two Python
+dependencies: pandas, and pytest for the suite. Everything else — SQLite, HTTP — is
+standard library.
 
 ```
 git clone https://github.com/IngTian/offchart.git
 cd offchart
 
-make conda-env               # conda env named "offchart", from conda-forge
-conda activate offchart
-
-# or, if you'd rather not use conda:
-make venv && . .venv/bin/activate
+make venv        # .venv, built by uv. No activation needed afterwards.
 ```
 
-Either is fine — nothing here has a compiled extension or a C library, so both
-dependencies are pure wheels installed from `requirements.txt` in both paths.
-`make conda-env` pins `-c conda-forge --override-channels`, which keeps it clear of
-Anaconda's `defaults` channels: a fresh conda refuses to create anything until their
-Terms of Service are accepted, and those terms carry commercial-use conditions that
-conda-forge does not.
+Python itself is not a prerequisite: `make venv` runs `uv venv --python 3.12`, which
+fetches a standalone interpreter when the system has none. Nothing here has a compiled
+extension or a C library, so both dependencies are pure wheels from `requirements.txt`,
+and there is no lock file for a dependency set of two.
 
 Every target runs through `$(PYTHON)`, resolved in this order: an **activated**
-environment (`$VIRTUAL_ENV`, then `$CONDA_PREFIX`), then a `.venv/` directory in the
+environment (`$VIRTUAL_ENV`), then a `.venv/` directory in the
 tree, then whatever `python3` is on `PATH`. Activation beats a directory on purpose — a
 leftover `.venv/` is not a statement of intent, and having it win is how a suite ends up
 passing against an environment you thought you'd left behind. `make which-python` prints
