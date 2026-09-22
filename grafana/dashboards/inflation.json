@@ -147,11 +147,12 @@
       },
       "options": {
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "orientation": "horizontal",
+        "orientation": "vertical",
         "textMode": "value_and_name",
         "colorMode": "none",
         "graphMode": "none",
-        "justifyMode": "center"
+        "justifyMode": "center",
+        "text": { "titleSize": 13, "valueSize": 34 }
       },
       "targets": [
         {
