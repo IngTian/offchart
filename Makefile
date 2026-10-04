@@ -166,9 +166,8 @@ clean:
 	find . -name __pycache__ -type d -prune -exec rm -rf {} +
 	rm -f data/offchart.sqlite-wal data/offchart.sqlite-shm
 
-# Safe to do, and worth knowing that it is: nine of the ten sources are re-fetchable,
-# and the tenth does not live in this file -- its history is the committed CSVs under
-# data/snapshots/. So the cost of deleting the database is one `make backfill`.
+# Safe to do, and worth knowing that it is: every source serves its own history back,
+# so the cost of deleting the database is one `make backfill` and nothing else.
 reset-db:
 ifndef CONFIRM
 	@echo 'This deletes data/offchart.sqlite. Recovery is one `make backfill`.'

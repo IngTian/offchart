@@ -54,7 +54,10 @@ CFTC_SOURCES: tuple[str, ...] = (
 )
 
 #: Every source present in the slice, so `fixture_data_dir` can stand in for data/.
-FIXTURE_SOURCES: tuple[str, ...] = CFTC_SOURCES + ("openrouter_pricing", "umich_sca")
+#: The committed fixture.sqlite still carries a vestigial openrouter_pricing table
+#: from before that source was deleted; it is simply not loaded. The next
+#: `make fixtures` drops it from the file.
+FIXTURE_SOURCES: tuple[str, ...] = CFTC_SOURCES + ("umich_sca",)
 
 #: Codes whose presence specific tests depend on. Named here so a fixture
 #: rebuild that drops one fails with this list rather than with an empty frame.
@@ -177,11 +180,6 @@ def disagg_fut(_session_frames) -> pd.DataFrame:
 def supp_cit(_session_frames) -> pd.DataFrame:
     """Supplemental. Rounds worst, no concentration columns, three cohorts unspread."""
     return _session_frames["cftc_supp_cit"].copy()
-
-
-@pytest.fixture
-def openrouter_pricing(_session_frames) -> pd.DataFrame:
-    return _session_frames["openrouter_pricing"].copy()
 
 
 @pytest.fixture

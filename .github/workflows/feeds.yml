@@ -1,0 +1,52 @@
+name: feeds
+
+# The monitor for the failure mode with no symptom: a CFTC column that still exists but
+# now means something else, which produces a plausible chart of a wrong number and
+# raises nothing anywhere. Offline tests cannot catch it -- they run against a frozen
+# fixture, so they prove the field map is self-consistent, not that it still matches the
+# API. Only a live call can tell the difference.
+#
+# This file is what is left of a workflow that also committed a daily CSV for
+# openrouter_pricing, a source that has since been deleted. Worth recording why, because
+# the shape was wrong in a way that is easy to rebuild by accident: the commit step sat
+# AFTER the test step, so when a scheduled run was dropped and left a one-day gap, the
+# gap-detection test went red, which skipped the commit, which created the next gap. Six
+# days of the data were destroyed by the guard that existed to protect it. If anything
+# here ever commits data again, the commit goes FIRST and the tests judge it afterwards.
+#
+# Nothing in this workflow writes, so it needs no permissions beyond reading the code.
+
+on:
+  schedule:
+    - cron: "15 20 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "lib/cftc_spec.py"
+      - "lib/cftc_api.py"
+      - "scripts/verify_spec.py"
+      - ".github/workflows/feeds.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: feeds
+  cancel-in-progress: false
+
+jobs:
+  feeds:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Verify the CFTC field maps against the live API
+        run: python -m scripts.verify_spec --rows 2000

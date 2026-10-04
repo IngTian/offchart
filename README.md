@@ -37,7 +37,6 @@ with no error anywhere, so the target that can't be half-run is the point.
 | `cftc_supp_cit` | CFTC supplemental — **index traders (CIT)** in 13 ag markets | 54,648 | 13 | 2006-01-03 |
 | `prices` | daily closes for the reported markets | 538,147 | 87 symbols | 1990-01-01 |
 | `umich_sca` | UMich Surveys of Consumers — sentiment and inflation expectations | 681 | — | 1951-02-01 |
-| `openrouter_pricing` | LLM token prices, **snapshot-only** | 5,617 | 456 models | 2026-09-01 |
 
 Not a curated handful of markets — the whole CFTC cross-section, because the base-rate
 question needs breadth and it turns out to be affordable.
@@ -108,9 +107,6 @@ data/offchart.sqlite  1,664 MB
   umich_sca                      681  2026-08-01      43d  Monthly, 10:00 ET
   …
   board_positioning        1,344,182  2026-09-08       5d  serving
-
-  committed snapshots (the history no API can return):
-  openrouter_pricing       13 dates  2026-09-01 .. 2026-09-13
 ```
 
 Freshness is reported because it's the failure this repo is most likely to suffer: a
@@ -261,32 +257,37 @@ it, or `CUME_DIST`, or `NTILE`, or reads an archive table.
 
 ## Licensing, and what is committed
 
-Nine of the ten sources are US federal work or openly published APIs. One is not, and the
-distinction is enforced by tests rather than by a comment.
+Eight of the nine sources are US federal work or openly published APIs. One is not, and
+the distinction is enforced by tests rather than by a comment.
 
-**The database is never committed.** Two independent reasons: it contains `umich_sca`, and
-it doesn't need to be. The University of Michigan grants permission-free *use* of its
-public Surveys of Consumers tables and separately prohibits *redistribution* without
-written consent (`faq.php` vs `agreement.php` — both quoted in `sources/umich.py`).
-Charting is fine; mirroring is not. And nine sources are backfillable, so losing the file
-costs one `make backfill`. Even the test fixture's UMich slice is **fabricated**, not
-sampled, for exactly this reason.
+**Nothing in `data/` is committed.** Two independent reasons for the database: it contains
+`umich_sca`, and it doesn't need to be. The University of Michigan grants permission-free
+*use* of its public Surveys of Consumers tables and separately prohibits *redistribution*
+without written consent (`faq.php` vs `agreement.php` — both quoted in `sources/umich.py`).
+Charting is fine; mirroring is not. And every source serves its own history back, so
+losing the file costs one `make backfill`. Even the test fixture's UMich slice is
+**fabricated**, not sampled, for exactly this reason.
 
-**`data/snapshots/` is committed, and must stay that way.** `openrouter_pricing` serves
-"today" with no archive, so a day nobody ran the job is a permanent hole. Its history
-lives in git as one immutable CSV per snapshot date — 13 dates, 595 KB — written *before*
-the database is touched, so the irreplaceable bytes never depend on a database write
-succeeding, a migration completing, or this machine still existing tomorrow.
+`tests/test_sources.py` asserts this by asking git directly rather than trusting
+`.gitignore` to say what it means: the store is unignorable at *every* path a `--db` run
+can write to, nothing under `data/` is tracked at all, and no committed file is named for
+a source we may not redistribute.
 
-`tests/test_sources.py` asserts both directions by asking git's ignore rules directly:
-a source we may not redistribute must have **no** committed artefact, and a source we
-cannot re-fetch must have **one**, with no missing dates between its first and last.
+This used to be two rules pulling opposite ways. A tenth source, `openrouter_pricing`,
+served only "today" with no archive, so it *had* to be committed to exist — one CSV per
+date, written before the database was touched, with a test asserting no gaps. It has been
+deleted, and the honest reason is worth recording: it rendered on no panel, and
+`/api/v1/models` reports one host's price per model out of a spread measured at a median
+20.7× (max 150×) across hosts, so the series tracked which host was cheapest that morning
+rather than any price. The daily job that maintained it also destroyed six days of it —
+the commit step sat *after* the test step, so one dropped cron created a gap, the
+gap-detection test went red, and the commit was skipped from then on. If anything here
+ever commits data again, the commit goes first.
 
-The `snapshot` workflow runs daily and commits only `data/snapshots/`. It does *not* pull
-CFTC — there's no committed state for CI to be incremental against, every CFTC source is
-backfillable, and a runner that fetched 900 MB only to be destroyed would be theatre. Its
-sibling job runs `scripts/verify_spec.py` against the live API, which is the monitor for
-the failure mode with no symptom.
+What remains automated is the `feeds` workflow: one live call to `scripts/verify_spec.py`
+to catch CFTC field-map drift, which is the monitor for the failure mode with no symptom.
+It commits nothing. CI does *not* pull CFTC — every source is re-fetchable, and a runner
+that fetched 900 MB only to be destroyed would be theatre.
 
 ## Adding a source is one file
 
@@ -299,8 +300,7 @@ the failure mode with no symptom.
 That's it. A module that raises on import is reported and **fails the suite** rather than
 silently vanishing, because a source that disappears looks like a design decision.
 
-Declare `backfillable=False` if the endpoint serves only "now" — that switches on the
-snapshot machinery and the durability test. Declare `redistributable=False` if the terms
+Declare `redistributable=False` if the terms
 forbid mirroring, and supply `license`, `citation` and `caveats`; the dataclass refuses to
 construct without them.
 
@@ -453,9 +453,10 @@ through a join rather than through a statistic, which is the variety that surviv
 Measured: 0 of 848 NASDAQ report dates get a price dated after the report; a forward join
 leaks on 1 row per market.
 
-`openrouter_pricing` routes for independent developers, not enterprise or first-party
-traffic — good for direction and mix, never for level. And it measures one factor of a
-product: inference revenue is tokens × price, so a falling line is not by itself bearish.
+There is no AI-inference data here any more, and the reason generalises. Inference revenue
+is tokens × price, and only the first factor's owner can measure it — no credible free
+token-volume series exists — so a price line alone answers nothing. The price side was
+tried and removed; see the rejection note in `sources/__init__.py`.
 
 ## What this cannot tell you
 
@@ -507,8 +508,8 @@ phase, not a setting.
 Serving tables are built into `<table>_new` and renamed inside one transaction, so Grafana
 never reads a half-built table.
 
-**Recovery.** `rm data/offchart.sqlite && make backfill` restores nine sources completely.
-The tenth is why `data/snapshots/` exists.
+**Recovery.** `rm data/offchart.sqlite && make backfill` restores every source
+completely. That is the whole recovery story — nothing here is kept only by us.
 
 ## Tests
 
@@ -543,13 +544,13 @@ catches a CFTC column which still exists but now means something else.
 ## Layout
 
 ```
-lib/          db (SQLite store), snapshots (committed CSVs), metrics, segments,
-              cftc_spec, cftc_api, universe, pricemap, cohort_groups, umich_spec, schema
+lib/          db (SQLite store), metrics, segments, cftc_spec, cftc_api, universe,
+              pricemap, cohort_groups, umich_spec, schema
 sources/      one file per source, auto-discovered
 scripts/      ingest, build (derived tables), status, verify_spec
 grafana/      docker-compose.yml, provisioning/, dashboards/  — all committed
-tests/        357 tests + fixture.sqlite
-data/         offchart.sqlite (ignored) + snapshots/ (committed)
+tests/        fixture.sqlite + the suite
+data/         offchart.sqlite — ignored, and nothing else lives here
 ```
 
 ## Licence
@@ -557,7 +558,7 @@ data/         offchart.sqlite (ignored) + snapshots/ (committed)
 Code: MIT, see [LICENSE](LICENSE).
 
 **The data is not this repo's to license.** CFTC Commitments of Traders is US Government
-work and in the public domain. Yahoo and OpenRouter data arrive under their own terms.
+work and in the public domain. Yahoo data arrives under its own terms.
 University of Michigan Surveys of Consumers data is used with permission for charting and
 is **never redistributed here** — cite it as *"University of Michigan, Survey Research
 Center, Surveys of Consumers."* If you publish anything derived from a source, check that

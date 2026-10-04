@@ -255,7 +255,6 @@ def build_sources() -> list[Source]:
                 sort_key=("report_date", "market_code", "cohort"),
                 schema=_schema_for(spec),
                 cadence=_cadence(spec),
-                backfillable=True,
                 incremental=True,
                 provenance=(
                     f"publicreporting.cftc.gov/resource/{spec.dataset}.json "

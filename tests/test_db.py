@@ -206,8 +206,8 @@ def test_a_source_id_that_is_not_a_safe_identifier_is_refused() -> None:
 
 def test_the_database_file_is_gitignored() -> None:
     """It contains umich_sca, which is licensed for use and not for redistribution.
-    tests/test_sources.py asserts the same thing plus its converse -- that
-    data/snapshots/ is NOT ignored -- and the pair is the whole rule."""
+    tests/test_sources.py asserts the same thing over every path a `--db` run can
+    write to, plus that nothing under data/ is committed at all."""
     import subprocess
 
     rel = db.DB_PATH.relative_to(ROOT).as_posix()

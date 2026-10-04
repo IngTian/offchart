@@ -9,8 +9,8 @@
 # What used to be here, and why it is gone:
 #   pyarrow==25.*   pinned for byte-reproducible parquet, so an unchanged day produced
 #                   an identical file and an empty git diff. There is no parquet now;
-#                   the store is one gitignored SQLite file, and durability comes from
-#                   the committed CSVs in data/snapshots/ instead.
+#                   the store is one gitignored SQLite file, and every source serves
+#                   its own history back, so nothing needs committing.
 #   streamlit,      the hand-maintained board. Replaced by Grafana reading SQL, which
 #   plotly          is why this repo now owns data and preprocessing only.
 pandas>=3.0,<4

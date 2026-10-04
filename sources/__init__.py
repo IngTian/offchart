@@ -12,9 +12,6 @@ rendering and the missing panel looks like a design choice.
 PLANNED SOURCES -- each needs its endpoint verified against a live payload first,
 per the "primary source, verified payload" rule that the rest of this repo obeys.
 
-  token volume        OpenRouter /rankings. HTML only, no JSON endpoint found.
-                      Scraping needs a schema-change guard that fails loudly
-                      rather than silently writing zeros.
   AI adoption         Ramp AI Index (ramp.com/data/ai-index), monthly, share of
                       US businesses paying for AI tools, from card spend.
   compute / releases  Epoch AI (epoch.ai/data) -- downloadable datasets.
@@ -31,6 +28,20 @@ per the "primary source, verified payload" rule that the rest of this repo obeys
                       on today's percentile but not forward RETURNS. A futures
                       settlement series keyed to cftc_contract_market_code is
                       what unlocks the latter.
+
+REJECTED, recorded so it is not rebuilt: AI token PRICE and token VOLUME.
+
+  openrouter_pricing shipped and was removed. /api/v1/models collapses a model's
+  price across every host that serves it into ONE number by an unstated rule --
+  measured 2026-10-04 across 8 multi-hosted models, the per-host spread had a
+  median of 20.7x and reached 150x, and the reported figure was the cheapest host
+  in only 3 of 8. So the series mostly records which host was selected that
+  morning, not a price. Provider-level prices need /api/v1/models/{id}/endpoints,
+  which is a real ingest rather than one row per model.
+
+  Token volume has no credible free series at all, which is the bigger problem:
+  "inference revenue = tokens x price" needs both factors, and only the hyperscalers
+  know the first. Without it a price series answers nothing on its own.
 """
 from __future__ import annotations
 

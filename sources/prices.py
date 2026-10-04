@@ -167,7 +167,6 @@ SOURCE_KWARGS = dict(
     ),
     group="Prices",
     cadence="Daily closes, available the evening of each session",
-    backfillable=True,
     incremental=True,
     provenance=(
         "query1.finance.yahoo.com/v8/finance/chart (no key). NOT a documented "
