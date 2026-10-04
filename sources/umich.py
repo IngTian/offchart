@@ -39,19 +39,20 @@ case; it is not open.
 The resolution costs this repo nothing structural, because the store was never going
 to be committed anyway: these rows land in data/offchart.sqlite like every other
 source, and that file is excluded. What `redistributable=False` adds is that the
-source may have no committed artefact either -- no directory under data/snapshots/ --
-which tests/test_sources.py enforces from the flag rather than from a comment.
+source's rows may reach no committed file at all, which tests/test_sources.py enforces
+from the flag rather than from a comment -- it asserts nothing under data/ is tracked
+and that no committed file is named for a restricted source.
 Grafana reads the local database, so the charts work exactly as they do for CFTC.
 Cost: a fresh clone has no sentiment data until it runs `make pull`.
 
 This is also what makes the survey safe to keep in a PUBLIC repo. Nothing UMich owns
-reaches version control: not the database, not the test fixture (tests/fixtures/build
-fabricates the umich_sca slice for precisely this reason), not a snapshot directory.
+reaches version control: not the database, and not the test fixture
+(tests/fixtures/build fabricates the umich_sca slice for precisely this reason).
 
 If you want it committed, the agreement's own escape hatch is "express written
 consent". UMich does not publish a permissions channel; the general contact address
 on sca.isr.umich.edu/contact.html is umsurvey@umich.edu. With consent in hand, flip
-`redistributable` and the test that forbids a snapshot directory stops applying.
+`redistributable` and the test that forbids a committed artefact stops applying.
 
 Two things NOT to conclude from the above. The data site is not login-gated -- it is
 publicly readable, and what sponsors buy is early access, the public copy lagging by
@@ -356,7 +357,6 @@ SOURCE_KWARGS = dict(
         "preliminary that previewed it."
     ),
     # The files carry full history every time, so a missed run costs nothing.
-    backfillable=True,
     incremental=False,
     provenance=(
         "sca.isr.umich.edu/files/{tbmics,tbmiccice,tbmpx1px5}.csv -- the public "

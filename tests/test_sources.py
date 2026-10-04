@@ -1,17 +1,20 @@
-"""The source contract: what may be committed, and what MUST be.
+"""The source contract: what may be committed.
 
-Two failure modes, opposite in direction, both of which leave the pipeline working.
+One failure mode, and it is the only irreversible one in the repo. A source whose
+terms forbid redistribution gets ingested and then committed because nobody
+remembered, and a public repo's history is not something you can take back. The
+database is gitignored so the ordinary path is safe; the risk is any OTHER file
+anyone is tempted to add -- a CSV export, a cached fetch, a convenience dump.
 
-  Publishing what we may not. A source whose terms forbid redistribution gets
-  ingested and then committed because nobody remembered. The database is gitignored
-  so the ordinary path is safe; the risk is a snapshot directory, which IS committed.
+There used to be a second, opposite rule here: a source whose API served only
+"today" could not be re-fetched, so it HAD to have a committed artefact or its
+history lived on one disk. That source (openrouter_pricing) is gone, along with the
+`backfillable` flag and the snapshot machinery. Every source now serves history, so
+the only artefact question left is whether committing is ALLOWED -- never whether it
+is required, which means no test here can be satisfied by writing data into the repo.
 
-  Losing what cannot be re-fetched. A `backfillable=False` source's history exists
-  only because we keep it. The database is gitignored and disposable, so if that
-  source has no snapshot directory its history depends on one machine's disk.
-
-A comment in .gitignore catches neither. `git check-ignore` does, so these tests ask
-git rather than trusting the file to say what it means.
+A comment in .gitignore catches none of this. `git check-ignore` and `git ls-files`
+do, so these tests ask git rather than trusting the file to say what it means.
 """
 from __future__ import annotations
 
@@ -25,7 +28,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import sources  # noqa: E402
-from lib import db, snapshots  # noqa: E402
+from lib import db  # noqa: E402
 from lib.schema import TableSchema  # noqa: E402
 from sources.base import Source  # noqa: E402
 
@@ -39,7 +42,6 @@ def _dummy_kwargs(**over):
         sort_key=("report_date",),
         schema=TableSchema(required=("report_date",)),
         cadence="never",
-        backfillable=True,
     )
     base.update(over)
     return base
@@ -63,8 +65,8 @@ def _is_ignored(rel: str) -> bool:
 
 def test_the_database_is_gitignored() -> None:
     """It holds every source, including ones licensed for use but not redistribution,
-    so it must never be committable -- and it does not need to be, because nine of ten
-    sources can be re-fetched."""
+    so it must never be committable -- and it does not need to be, because every
+    source can now be re-fetched."""
     rel = db.DB_PATH.relative_to(ROOT).as_posix()
     assert _is_ignored(rel), f"{rel} must be gitignored"
 
@@ -124,50 +126,51 @@ def test_the_committed_test_fixture_is_still_committable() -> None:
     )
 
 
-def test_the_snapshot_directory_is_NOT_gitignored() -> None:
-    """The inverse, and it is the one that loses data if it breaks. data/snapshots/ is
-    the only committed copy of the history that no API can return."""
-    rel = snapshots.SNAPSHOT_DIR.relative_to(ROOT).as_posix()
-    assert not _is_ignored(rel), (
-        f"{rel} is gitignored -- that is the committed home of the one source that "
-        "cannot be re-fetched, and ignoring it makes a missed day permanent"
+def _tracked(pathspec: str) -> list[str]:
+    out = subprocess.run(
+        ["git", "ls-files", "--", pathspec], cwd=ROOT, capture_output=True, text=True
+    )
+    return [p for p in out.stdout.splitlines() if p]
+
+
+def test_nothing_under_data_is_committed() -> None:
+    """data/ is where every fetched row lands, so nothing in it may reach git.
+
+    This replaces a pair of narrower tests that asked only about data/snapshots/, and
+    it is strictly stronger: the question is not whether one known directory is
+    committed but whether ANY data file is. The store itself is covered by the ignore
+    tests above; this catches the other half -- a CSV export, a debug dump, a cached
+    fetch dropped next to it, any of which could carry umich_sca rows into a public
+    history that cannot be rewritten after the fact.
+
+    If a committed data artefact is ever genuinely wanted, it has to be argued for
+    here rather than appearing as an untracked file somebody ran `git add -A` over.
+    """
+    tracked = _tracked("data")
+    assert not tracked, (
+        f"{len(tracked)} file(s) under data/ are tracked by git: {tracked[:8]}. "
+        "Everything there is fetched from an API and re-fetchable, and some of it "
+        "(umich_sca) may not be redistributed at all."
     )
 
 
 @pytest.mark.parametrize("source", sources.all_sources(), ids=lambda s: s.id)
-def test_a_source_we_may_not_redistribute_has_no_committed_snapshots(source: Source) -> None:
-    """Snapshots are committed, so a restricted source having one would publish it --
-    the exact thing its licence forbids."""
+def test_a_source_we_may_not_redistribute_has_no_committed_artefact(source: Source) -> None:
+    """The licence rule, asked of the whole tree rather than one directory.
+
+    A restricted source's rows must not reach any committed file, wherever someone
+    puts it. Matching on the source id is a heuristic -- it catches
+    `umich_sca_export.csv` and not `survey_dump.csv` -- so it is a backstop behind
+    the ignore rules, not the primary guard. The primary guard is that the only place
+    these rows ever land is the gitignored store.
+    """
     if source.redistributable:
         return
-    directory = snapshots.dir_for(source.id)
-    assert not directory.exists() or not list(directory.glob("*.csv")), (
-        f"{source.id} may not be redistributed ({source.license}) but has committed "
-        f"snapshots in {directory}"
-    )
-
-
-@pytest.mark.parametrize("source", sources.all_sources(), ids=lambda s: s.id)
-def test_a_source_that_cannot_be_refetched_has_committed_snapshots(source: Source) -> None:
-    """The durability rule, and the reason lib/snapshots exists.
-
-    A backfillable source loses nothing when the database is deleted -- one refetch
-    restores it. This one cannot be refetched at all, so if it has no committed
-    snapshot its history lives on exactly one disk.
-    """
-    if source.backfillable:
-        return
-    files = sorted(snapshots.dir_for(source.id).glob("*.csv"))
-    assert files, (
-        f"{source.id} is backfillable=False, so its history cannot be recovered from "
-        f"the API. It must have committed snapshots in "
-        f"{snapshots.dir_for(source.id)}; run scripts.ingest to write them."
-    )
-    gaps = snapshots.missing_dates(source.id)
-    assert not gaps, (
-        f"{source.id} is missing {len(gaps)} snapshot date(s) between its first and "
-        f"last: {gaps[:8]}. These are unrecoverable; if the gap is known and accepted, "
-        "record it here rather than deleting this assertion."
+    hits = [p for p in _tracked("*") if source.id in Path(p).name
+            and Path(p).suffix in {".csv", ".parquet", ".json", ".sqlite", ".tsv"}]
+    assert not hits, (
+        f"{source.id} may not be redistributed ({source.license}) but these committed "
+        f"files are named for it: {hits}"
     )
 
 

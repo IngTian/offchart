@@ -783,7 +783,7 @@ def _dummy_source(**over) -> Source:
     kwargs = dict(
         id="dummy", label="dummy", fetch=lambda since=None: pd.DataFrame(),
         key=PRIMARY_KEY, sort_key=PRIMARY_KEY,
-        schema=TableSchema(required=("report_date",)), cadence="never", backfillable=True,
+        schema=TableSchema(required=("report_date",)), cadence="never",
     )
     return Source(**{**kwargs, **over})
 

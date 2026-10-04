@@ -36,13 +36,12 @@ and SQLite has no REGEXP without a loadable extension the data source will not l
 
 DURABILITY, WHICH IS NOT THIS FILE'S JOB
 
-This file is deliberately NOT committed and NOT backed up. Nine of the ten sources are
-backfillable=True: losing them costs one `scripts/ingest --backfill`. The tenth,
-openrouter_pricing, serves only "today" and its history exists solely because we keep
-it -- 4,727 rows across 11 snapshot dates, 26 KB, the entire irreplaceable asset in
-this repo. That does not live here. It lives in git as one immutable CSV per snapshot
-date, written before the database is touched, so a snapshot survives a corrupt
-database, a migration in progress, or a host that never came back.
+This file is deliberately NOT committed and NOT backed up, and that is now true without
+a caveat: every source serves history, so losing the store costs one
+`scripts/ingest --backfill` and nothing else. There was once an exception --
+openrouter_pricing, whose API served only "today", so its past existed solely because a
+daily job committed a CSV per date. It is deleted, and with it the only data in this
+repo that a re-fetch could not reproduce.
 """
 from __future__ import annotations
 
@@ -54,8 +53,7 @@ import pandas as pd
 #: The whole store. Excluded from version control -- see .gitignore, and the tests
 #: that assert it -- both because this file contains umich_sca (licensed for use, not
 #: redistribution) and because it does not need committing: it is a cache of public
-#: APIs, and the one source that is NOT re-fetchable keeps its history in
-#: data/snapshots/ instead.
+#: APIs, every one of which serves its own history back.
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "offchart.sqlite"
 
 

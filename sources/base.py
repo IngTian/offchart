@@ -40,10 +40,6 @@ class Source:
     #: Human description of when new data appears, shown in the UI.
     cadence: str
 
-    #: True  -> the API serves history, so a missed run costs nothing.
-    #: False -> the API serves only "now", so a missed run is a permanent hole.
-    backfillable: bool
-
     #: True -> fetch(since=...) meaningfully narrows the pull. Sources that
     #: serve full history cheaply can leave this False and always pull in full.
     incremental: bool = False
@@ -71,13 +67,17 @@ class Source:
     #: ignored database: a fresh clone has to fetch it for itself.
     license: str = "unspecified"
 
-    #: False -> this source may have NO committed artefact, which today means no
-    #: directory under data/snapshots/. The database is never committed either
-    #: way, so this flag is about what reaches version control. See license
-    #: above, and note the separate and opposite rule on `backfillable`: a source
-    #: that cannot be re-fetched MUST have committed snapshots. A source that was
-    #: both backfillable=False and redistributable=False would be unstorable, and
-    #: tests/test_sources.py would fail on it from both directions at once.
+    #: False -> this source's rows may reach NO committed file. The database is
+    #: gitignored either way, so in practice this is a rule about anything else
+    #: anyone is tempted to commit: a CSV export, a cached fetch, a test
+    #: fixture. See license above.
+    #:
+    #: This used to have a counterpart, `backfillable`, for a source whose API
+    #: served only "today" and which therefore HAD to be committed to exist at
+    #: all -- the two flags together could describe an unstorable source. That
+    #: source is gone and so is the flag; every source here now serves history,
+    #: so the only artefact question left is whether committing is ALLOWED, never
+    #: whether it is required. tests/test_sources.py asks git directly.
     redistributable: bool = True
 
     #: Attribution the upstream requires, verbatim. Rendered next to the charts.

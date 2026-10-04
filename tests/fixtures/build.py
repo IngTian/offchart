@@ -69,9 +69,6 @@ and a suffix window makes one look young. Neither is a property of the data.
 Tests that care about liveness or tiering use cftc_tff_fut, where the codes run
 to the real last report.
 
-openrouter_pricing is copied whole -- it is snapshot-only and currently holds one
-snapshot date, so there is nothing to trim.
-
 The slice is read from the real SQLite store and written back through the real
 lib.db.upsert with each Source's declared key, into ONE committed file --
 tests/fixtures/fixture.sqlite. A fixture written by a different code path would not
@@ -102,9 +99,6 @@ from lib import db  # noqa: E402
 #: (first report to keep, last report to keep), inclusive; None means unbounded.
 FULL: tuple[str | None, str | None] = (None, None)
 
-#: How many trailing snapshot dates a snapshot-only source contributes.
-SNAPSHOT_TAIL = "tail:2"
-
 #: source_id -> {market_code: window}. `None` instead of a dict means "every row",
 #: for a source that is already tiny. See the module docstring for what each code
 #: is here to make true.
@@ -121,12 +115,6 @@ SELECTION: dict[str, dict[str, tuple[str | None, str | None]] | None] = {
     },
     "cftc_disagg_fut": {"088691": ("2016-01-01", None)},  # residual exactly zero
     "cftc_supp_cit": {"001602": ("2016-01-01", None)},  # worst rounding, no conc
-    # Snapshot-only, and the tests need its SHAPE (a snapshot_date key, per-token
-    # and per-million columns, nulls) rather than its history. Trimmed to the last
-    # two dates: whole, it is 5,617 rows of long model identifiers and accounts for
-    # most of the fixture's bytes. Its real history lives in data/snapshots/, which
-    # is what must not be trimmed.
-    "openrouter_pricing": SNAPSHOT_TAIL,
 }
 
 
@@ -140,12 +128,6 @@ def _slice(source_id: str, windows, live) -> pd.DataFrame:
         raise SystemExit(
             f"{source_id}: the store is empty -- run `make backfill` first"
         )
-    if isinstance(windows, str) and windows.startswith("tail:"):
-        # A source with no market_code, trimmed by trailing dates instead.
-        n = int(windows.split(":")[1])
-        date_col = sources.get(source_id).sort_key[0]
-        keep = sorted(df[date_col].astype(str).unique())[-n:]
-        return df[df[date_col].astype(str).isin(keep)].copy()
     if windows is None:
         out = df.copy()
     else:

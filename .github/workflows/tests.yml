@@ -1,8 +1,8 @@
 name: tests
 
-# Runs on every push. The snapshot workflow runs the suite too, but only on its own
-# schedule and on pushes touching a few paths, so this is the one that covers a change
-# anywhere else.
+# Runs on every push, and it is the only workflow that runs the suite. The other one
+# (feeds) makes a live API call to catch CFTC field-map drift and asserts nothing about
+# the code.
 #
 # ~2 seconds, no network, and no dependence on data/: the suite reads the 5 MB
 # committed slice in tests/fixtures/fixture.sqlite. That is what lets CI tell you a

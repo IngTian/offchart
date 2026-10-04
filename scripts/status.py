@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import sources  # noqa: E402
-from lib import db, snapshots  # noqa: E402
+from lib import db  # noqa: E402
 
 #: Tables Grafana reads. Listed separately from the sources because a stale one here
 #: means something different: the fetch worked and the rebuild did not, which is the
@@ -32,9 +32,9 @@ SERVING = ("board_positioning", "board_inflation")
 def _age_days(when: str | None) -> int | None:
     """Age in days against UTC today, not local today.
 
-    Every date in this store is a UTC calendar date -- a CFTC report date, a snapshot
-    taken by a UTC cron. Comparing against a local date west of Greenwich makes
-    this morning's snapshot report an age of -1, which reads as a bug in the data.
+    Every date in this store is a UTC calendar date -- a CFTC report date, a daily
+    close. Comparing against a local date west of Greenwich makes today's newest
+    row report an age of -1, which reads as a bug in the data.
     """
     if not when:
         return None
@@ -92,20 +92,9 @@ def main() -> int:
     finally:
         con.close()
 
-    # The irreplaceable part, reported separately because it has a different recovery
-    # story: everything above is one `make backfill` away, and this is not.
-    print("\n  committed snapshots (the history no API can return):")
-    any_snapshots = False
-    for src in sources.all_sources():
-        days = snapshots.dates(src.id)
-        if not days:
-            continue
-        any_snapshots = True
-        gaps = snapshots.missing_dates(src.id)
-        note = f"  {len(gaps)} MISSING DATE(S)" if gaps else ""
-        print(f"  {src.id:<22} {len(days):>4} dates  {days[0]} .. {days[-1]}{note}")
-    if not any_snapshots:
-        print("    none -- expected only if no backfillable=False source is registered")
+    # Everything above is one `make backfill` away. There used to be a section here for
+    # the one source that was not -- openrouter_pricing, whose history existed only as
+    # committed CSVs -- and it is gone with that source.
     return 0
 
 

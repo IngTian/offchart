@@ -13,9 +13,13 @@ venv
 
 # ---------------------------------------------------------------- data/
 #
-# data/ splits in two, and the split is the whole durability story of this repo.
+# NOTHING IN data/ IS COMMITTED. It used to split in two -- the database ignored, and
+# data/snapshots/ committed because one source could not be re-fetched -- but that
+# source (openrouter_pricing) is deleted and the rule is now the simple one.
+# tests/test_sources.py asserts it by asking `git ls-files data`, which a comment here
+# cannot do.
 #
-# THE DATABASE IS NOT COMMITTED. Two independent reasons, either sufficient:
+# Two independent reasons, either sufficient:
 #
 #   It contains umich_sca. The University of Michigan grants permission-free USE of
 #   its public Surveys of Consumers tables and separately prohibits redistribution
@@ -23,15 +27,8 @@ venv
 #   sources/umich.py). Charting them is fine; mirroring them into a public repo is
 #   not. So the file is fetched and read like any other, and never committed.
 #
-#   It does not need committing. Nine of the ten sources are backfillable=True, so
-#   losing this file costs one `make backfill`. It is a cache of public APIs.
-#
-# data/snapshots/ IS COMMITTED, and nothing below may ignore it. The tenth source
-# (openrouter_pricing) serves only "today" with no archive, so a missed run is a
-# permanent hole and its history exists solely because we keep it. It lives in git as
-# one immutable CSV per snapshot date. tests/test_sources.py asserts both directions
-# of this via `git check-ignore` -- that the database is ignored and that
-# data/snapshots/ is NOT -- because a comment cannot catch either mistake.
+#   It does not need committing. Every source serves its own history back, so losing
+#   this file costs one `make backfill`. It is a cache of public APIs.
 #
 # The pattern describes the SHAPE of a store, not the default path, because every
 # script takes `--db` (scripts/ingest.py, scripts/build.py, scripts/status.py). An
