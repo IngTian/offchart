@@ -101,8 +101,8 @@
       "title": "Latest reading \u2014 ${market:text} \u00b7 ${group:text}",
       "description": "The newest row for this market and cohort, regardless of the time picker -- the Report date tile is what makes that honest. The percentile is CAUSAL: each week is ranked only against weeks at or before itself, computed in pandas and never in SQL. It is blank where the pool is under 140 weeks, because a rank off a short history renders exactly as confidently as one off twenty years. Open interest and its percentile are market-level, identical on every cohort row, so they live in their own panels rather than being printed here as if they described this cohort.",
       "gridPos": {
-        "h": 5,
-        "w": 24,
+        "h": 9,
+        "w": 7,
         "x": 0,
         "y": 0
       },
@@ -132,10 +132,10 @@
         "wideLayout": true,
         "colorMode": "none",
         "graphMode": "none",
-        "justifyMode": "center",
+        "justifyMode": "auto",
         "text": {
-          "titleSize": 14,
-          "valueSize": 44
+          "titleSize": 13,
+          "valueSize": 36
         }
       },
       "fieldConfig": {
@@ -211,7 +211,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 5
+        "y": 9
       },
       "targets": [
         {
@@ -366,7 +366,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 15
+        "y": 19
       },
       "targets": [
         {
@@ -466,7 +466,7 @@
         "h": 7,
         "w": 24,
         "x": 0,
-        "y": 23
+        "y": 27
       },
       "targets": [
         {
@@ -601,7 +601,7 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 30
+        "y": 34
       },
       "targets": [
         {
@@ -703,7 +703,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 30
+        "y": 34
       },
       "targets": [
         {
@@ -786,9 +786,9 @@
       "description": "The numeric answer to 'show them separately' for every cohort at once, on all three families. Combined rows sort last and are flagged, because a combined row is the sum of rows above it and summing the column would double-count. Open interest and its percentile are excluded on purpose: they are market-level, and printing them on six rows invites reading six measurements where there is one.",
       "gridPos": {
         "h": 9,
-        "w": 24,
-        "x": 0,
-        "y": 36
+        "w": 17,
+        "x": 7,
+        "y": 0
       },
       "targets": [
         {
