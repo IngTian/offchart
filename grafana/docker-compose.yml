@@ -20,7 +20,15 @@ services:
     environment:
       # Signed community plugin, pure Go, so it runs on the default Alpine image and
       # needs no allow_loading_unsigned_plugins.
-      GF_PLUGINS_PREINSTALL: frser-sqlite-datasource
+      #
+      # PINNED, and the version is load-bearing. The Market dropdown shows names while
+      # submitting codes, which the plugin implements by looking for columns named
+      # exactly `__text` and `__value` -- added in v3.5.0. Grafana core's own fallback
+      # looks for lowercase `text`/`value` instead, so on an older plugin the variable
+      # does not degrade to codes, it throws and the dropdown comes up empty. Grafana
+      # itself is pinned two lines up; leaving the plugin floating meant the board's
+      # behaviour depended on when the image was pulled.
+      GF_PLUGINS_PREINSTALL: frser-sqlite-datasource@4.0.6
       GF_PATHS_PROVISIONING: /repo/grafana/provisioning
       # Single reader on a laptop. Turn this off before exposing the port anywhere.
       GF_AUTH_ANONYMOUS_ENABLED: "true"

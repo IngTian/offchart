@@ -84,10 +84,39 @@ def _epoch_ms(when) -> pd.Series:
     return pd.Series(idx.astype("int64") // 1_000_000, index=range(len(idx)))
 
 
-def _served_markets(dataset: str, frame: pd.DataFrame) -> set[str]:
-    summary = assign_tiers(market_summary(frame))
+#: Markets forced into a served tier regardless of contract-count liquidity.
+#:
+#: 133741 is CME's full-size BITCOIN future (5 BTC). It misses OI_WIDE on a count of
+#: CONTRACTS, while 133742 -- MICRO BITCOIN, a fiftieth of the notional -- clears it,
+#: because a micro contract racks up fifty times the count for the same exposure. So
+#: the board was serving the micro leg and calling it bitcoin: 2.5% of CME's bitcoin
+#: open interest by notional. A liquidity filter denominated in contracts cannot see
+#: that, and the fix belongs here rather than in OI_WIDE -- lowering the threshold to
+#: admit this one market admits sixteen others and quietly reshapes the cross-section
+#: the base-rate reasoning rests on. One code, auditable, with the reason written down.
+FORCE_SERVED = {"133741"}
+
+
+def _served_markets(dataset: str, frame: pd.DataFrame) -> dict[str, str]:
+    """market_code -> the label a reader picks from, for every served market.
+
+    Returns the label rather than a bare set because `board_positioning` is the only
+    table a Grafana panel OR template variable may read (tests/test_grafana asserts
+    both), so a name that is not carried here cannot reach the dropdown at all. The
+    code stays inside the label: the dropdown fuzzy-matches on the label only, so
+    "BITCOIN (133742)" is findable by `btc` AND by the code, where a bare name loses
+    the latter.
+
+    `market` is the short contract name, not `market_full`: measured over the served
+    universe, `market` changes on 3 of 288 codes while `market_full` changes on 132 --
+    the latter's churn is cosmetic exchange renaming, and a label that moves is a
+    dropdown entry that moves under the reader.
+    """
+    summary = assign_tiers(market_summary(frame), allowlist=FORCE_SERVED)
     tiered = summary[summary["tier"].isin(SERVED_TIERS)]
-    return set(tiered["market_code"].astype(str))
+    codes = tiered["market_code"].astype(str)
+    names = tiered["market"].astype(str) if "market" in tiered else codes
+    return {c: f"{n} ({c})" for c, n in zip(codes, names)}
 
 
 def _closes_by_symbol(con) -> dict[str, pd.DataFrame]:
@@ -166,7 +195,14 @@ def _positioning_rows(dataset: str, frame: pd.DataFrame, closes: dict[str, pd.Da
             out.append(pd.DataFrame({
                 "dataset": dataset,
                 "market_code": code,
+                # Both labels are carried rather than derived in panel SQL because a
+                # template variable may read only the serving tables, so a name that
+                # is not here cannot reach a dropdown. `cohort_label` also keeps
+                # lib/cohort_groups.LABEL the single source of truth -- the
+                # alternative is a ten-branch CASE in committed dashboard JSON.
+                "market_label": served[code],
                 "cohort_group": group,
+                "cohort_label": cohort_groups.label_for(group),
                 "report_date": oi.index.strftime("%Y-%m-%d"),
                 "ts": _epoch_ms(oi.index).to_numpy(),
                 "segment_id": seg.to_numpy(),
