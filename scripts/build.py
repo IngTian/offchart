@@ -343,9 +343,18 @@ def _flow_rows(con) -> pd.DataFrame:
         # sources. Not taken from VanEck's own '% Change' column even though it
         # exists: that column is TOTAL RETURN on SMH's annual December distribution
         # and disagrees with the NAV-derived change by up to 2.22 points on 14 rows.
-        published = pd.to_numeric(sub.get("nav_change_pct"), errors="coerce")
-        derived = (sub["nav"] / sub["nav"].shift(1) - 1.0) * 100.0
-        nav_change = published.fillna(derived) if published is not None else derived
+        # Tested against `in sub`, not `sub.get(...) is not None`: on an absent
+        # column pd.to_numeric(None, errors="coerce") returns np.float64(nan) rather
+        # than None, so the obvious guard is always true and .fillna() then raises
+        # AttributeError on a numpy scalar. Reachable whenever proshares_flows is
+        # the absent table -- `ingest --source spy_flows` on a fresh store, or a
+        # ProShares fetch that fails while the other three write rows -- and the
+        # crash aborts main() before finalize_for_serving, handing Grafana a
+        # WAL-mode file. See tests/test_build.test_a_flows_source_that_publishes_*.
+        nav_change = (sub["nav"] / sub["nav"].shift(1) - 1.0) * 100.0
+        if "nav_change_pct" in sub:
+            published = pd.to_numeric(sub["nav_change_pct"], errors="coerce")
+            nav_change = published.fillna(nav_change)
         out.append(pd.DataFrame({
             "ticker": ticker,
             "ticker_label": (

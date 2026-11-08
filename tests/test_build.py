@@ -208,3 +208,81 @@ def test_the_full_size_bitcoin_contract_is_served(tmp_path: Path) -> None:
         "133741 built no serving rows. The fixture carries it, so either the "
         "allowlist stopped being passed to assign_tiers or the tier filter changed."
     )
+
+
+# ------------------------------------------------- the flows bracket
+
+#: The columns a flows source emits, in the shape build consumes them. Only
+#: proshares_flows carries nav_change_pct -- SSGA publishes no change column at all
+#: and VanEck's is total return, so build derives it from NAV. That makes the flows
+#: frame the one bracket whose column set DIFFERS between sources, which is why the
+#: absent-column path below needs a test of its own.
+def _flows_frame(ticker: str, published: list[float] | None = None) -> pd.DataFrame:
+    frame = pd.DataFrame({
+        "trade_date": ["2026-11-03", "2026-11-04", "2026-11-05"],
+        "ticker": ticker,
+        "fund_name": f"{ticker} Test Fund",
+        "index_family": "SPX",
+        "multiple": 1.0,
+        "nav": [100.0, 110.0, 99.0],
+        "shares_outstanding": [1000.0, 1000.0, 2000.0],
+        "assets": [100_000.0, 110_000.0, 198_000.0],
+    })
+    if published is not None:
+        frame["nav_change_pct"] = published
+    return frame
+
+
+def test_a_flows_source_that_publishes_no_nav_change_still_builds(
+    tmp_path: Path,
+) -> None:
+    """The absent-column path, which crashed before this test existed.
+
+    `pd.to_numeric(None, errors="coerce")` returns np.float64(nan) rather than None,
+    so a `sub.get(...) is not None` guard is ALWAYS true and .fillna() then raises
+    AttributeError on a numpy scalar. Reachable without anything exotic: a store
+    holding only the SSGA/VanEck sources -- `ingest --source spy_flows` on a fresh
+    file, or a ProShares fetch that fails while the other three write rows -- because
+    pd.concat only unions the column in when ProShares contributes a frame.
+
+    The cost of the crash is larger than a traceback. build.main raises before
+    db.finalize_for_serving, so the store is left in WAL mode, which is the one state
+    where Grafana loses the lock race and draws a blank panel beside two full ones.
+    """
+    con = db.connect(tmp_path / "f.sqlite")
+    try:
+        db.upsert(con, "spy_flows", _flows_frame("SPY"), ("trade_date", "ticker"))
+        rows = build._flow_rows(con)
+    finally:
+        con.close()
+
+    assert len(rows) == 3, f"expected 3 fund-days, got {len(rows)}"
+    # Derived from NAV: first day has no prior close, then +10% and -10%.
+    got = rows["nav_change_pct"].tolist()
+    assert pd.isna(got[0]), f"the first row has no prior NAV, so it cannot be {got[0]}"
+    assert got[1] == pytest.approx(10.0)
+    assert got[2] == pytest.approx(-10.0)
+
+
+def test_a_published_nav_change_wins_over_the_derived_one(tmp_path: Path) -> None:
+    """Where an issuer does publish the column, build must prefer it row by row.
+
+    Pinned with a deliberately WRONG published value, because a fallback that quietly
+    recomputed everything would still produce plausible numbers and pass any test
+    that only asserted the arithmetic. The null falls through to the derived figure,
+    which is the per-row behaviour .fillna gives and a whole-column choice would not.
+    """
+    con = db.connect(tmp_path / "f.sqlite")
+    try:
+        db.upsert(
+            con, "proshares_flows",
+            _flows_frame("TQQQ", published=[0.0, 42.0, float("nan")]),
+            ("trade_date", "ticker"),
+        )
+        rows = build._flow_rows(con)
+    finally:
+        con.close()
+
+    got = rows["nav_change_pct"].tolist()
+    assert got[1] == pytest.approx(42.0), "the published value was not preferred"
+    assert got[2] == pytest.approx(-10.0), "a null did not fall back to the derived value"
