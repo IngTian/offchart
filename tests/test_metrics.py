@@ -18,15 +18,14 @@ hand-computed values, and the holes get their own section -- a NaN observation
 must come out NaN, since a percentile of 0.0 reads as "the most extreme low in
 three years" and is worse than a blank for looking actionable.
 
-What these tests refuse to do: touch data/, import lib.store, lib.cache or
-streamlit, or hit the network. Every fixture is either a literal from the corpus
+What these tests refuse to do: touch data/, read the live store, or hit the
+network. Every fixture is either a literal from the corpus
 (the 2023-05-02 NASDAQ re-basing, the 191691 aluminium code reuse, the negative
 1998 non-reportable legacy row) or a seeded generator, because a test whose
 verdict changes when the weekly ingest lands is not a test of the code.
 """
 from __future__ import annotations
 
-import inspect
 import warnings
 
 import numpy as np
@@ -34,7 +33,6 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_series_equal
 
-from lib import cftc_spec
 from lib import metrics as M
 from lib import segments as S
 
@@ -59,15 +57,13 @@ def walk(seed: int, n: int = N_WEEKS) -> pd.Series:
 
 
 #: name -> callable(values, dates, **window_kwargs) for every function that
-#: produces a ranking. The kwargs pass through so a short window can be used on a
-#: hand-built series; expanding_percentile has no window and ignores them.
+#: produces a ranking. The dates and kwargs are accepted and ignored, so the
+#: causality harness below has one signature; expanding_percentile has no window.
+#: Trailing-window rankers lived here too and were deleted -- see the note on
+#: test_non_causal_implementations_fail_the_truncation_check.
 RANKERS = {
     "expanding_percentile": lambda v, d, **kw: M.expanding_percentile(v),
-    "trailing_percentile": lambda v, d, **kw: M.trailing_percentile(v, d, **kw),
-    "cot_index": lambda v, d, **kw: M.cot_index(v, d, **kw),
-    "trailing_zscore": lambda v, d, **kw: M.trailing_zscore(v, d, **kw),
 }
-WINDOWED = ["trailing_percentile", "cot_index", "trailing_zscore"]
 
 #: Plausible-looking one-liners that see the whole sample. Both must fail.
 NON_CAUSAL = {
@@ -97,52 +93,21 @@ def test_expanding_percentile_causal_by_truncation(seed: int, k: int) -> None:
     _assert_prefix_stable(RANKERS["expanding_percentile"], walk(seed), weekly(), k)
 
 
-@pytest.mark.parametrize("name", WINDOWED)
-@pytest.mark.parametrize("seed", [0, 1, 2, 3, 17])
-@pytest.mark.parametrize("k", [200, 280, 350])
-def test_windowed_rankers_causal_by_truncation(name: str, seed: int, k: int) -> None:
-    """Causal once the window is saturated. Every cut is >= 158 on purpose, and
-    the reason is a real limitation rather than test convenience -- see
-    test_trailing_gate_is_not_prefix_stable."""
-    _assert_prefix_stable(RANKERS[name], walk(seed), weekly(), k)
-
-
 @pytest.mark.parametrize("name", sorted(NON_CAUSAL))
 @pytest.mark.parametrize("k", [37, 200, 350])
 def test_non_causal_implementations_fail_the_truncation_check(name: str, k: int) -> None:
     """The check has teeth. Without this it could be comparing a function to
-    itself and passing forever."""
+    itself and passing forever.
+
+    This matters more now than when the harness ranked four functions. The
+    trailing-window rankers were deleted for having no production caller, so
+    expanding_percentile is the only real implementation left under test -- and a
+    one-entry harness is exactly the shape that can rot into a tautology. These
+    two deliberately-wrong one-liners are what stops that.
+    """
     with pytest.raises(AssertionError):
         _assert_prefix_stable(NON_CAUSAL[name], walk(0), weekly(), k)
 
-
-@pytest.mark.parametrize("name", WINDOWED)
-@pytest.mark.parametrize("k", [100, WINDOW_REPORTS])
-def test_windowed_values_agree_wherever_both_are_published(name: str, k: int) -> None:
-    """During warm-up a prefix and the full series disagree about WHICH points to
-    publish, but never about the value of a published point -- so the look-ahead
-    documented below is confined to the min-observation mask. No rank, index or
-    z-score is contaminated by a future observation."""
-    fn, v, d = RANKERS[name], walk(5), weekly()
-    on_prefix, sliced = fn(v.iloc[:k], d.iloc[:k]), fn(v, d).iloc[:k]
-    both = on_prefix.notna() & sliced.notna()
-    assert both.sum() > 0
-    np.testing.assert_array_equal(on_prefix[both].to_numpy(), sliced[both].to_numpy())
-
-
-@pytest.mark.parametrize("k", [60, 100, WINDOW_REPORTS])
-def test_trailing_gate_is_causal_during_warmup(k: int) -> None:
-    """The publish/blank GATE must be causal too, not just the published values.
-
-    This was an xfail: the min_obs floor came from `counts.mode()` over the whole
-    series, so whether observation t published depended on how many reports
-    arrived after it (a 157-row prefix blanked 1 point where the full series
-    blanked 94 of the same 157 -- identical values, different masks).
-    _causal_floor now derives the floor from the nominal weekly cadence, which is
-    data-independent. Every cut point here is inside the warm-up on purpose,
-    because that is the only region where the two derivations disagree.
-    """
-    _assert_prefix_stable(RANKERS["trailing_percentile"], walk(5), weekly(), k)
 
 
 # --------------------------------------------------------------------------- #
@@ -211,147 +176,31 @@ def test_expanding_percentile_properties(values, min_history, expected) -> None:
     )
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2, 3])
-def test_last_percentile_equals_final_expanding_value(seed: int) -> None:
-    """The cross-market screen's shortcut must not be a different measure from
-    the chart it sits next to."""
-    v = walk(seed, 300)
-    v.iloc[[7, 88, 201]] = np.nan  # interior holes, but not a trailing one
-    assert M.last_percentile(v) == pytest.approx(M.expanding_percentile(v).iloc[-1])
-
-
-def test_last_percentile_with_no_observations_is_nan() -> None:
-    assert pd.isna(M.last_percentile(pd.Series([np.nan, np.nan])))
-
-
 # --------------------------------------------------------------------------- #
 # Holes. A missing observation is not a reading, in ANY ranker.
 # --------------------------------------------------------------------------- #
-#: A 35-day window holds 5 weekly reports, so the publish floor is
-#: max(hard_min, 0.6 * 5) = 3 for all three windowed rankers -- small enough to
-#: hand-check, saturated enough to publish.
-SHORT_WINDOW = {"window_days": 35}
-
-
 @pytest.mark.parametrize("name", sorted(RANKERS))
 def test_no_ranker_ranks_a_missing_observation(name: str) -> None:
     """A NaN at the labelled point must produce NaN, not a number.
 
-    The `_PCTILE_CASES` "nan-skipped-not-ranked" property, applied to the other
-    three rankers, where it was a live display bug: comparing against NaN yields
+    This was a live display bug, not a hypothetical: comparing against NaN yields
     False, so `(w <= w[-1]).sum() / len(w)` published exactly 0.0 for a hole --
     10,720 week-readings across 97 (market, cohort) series, every one of them 0.0.
-    The gate above cannot help, because rolling().count() ignores NaNs and the
-    window still looks full.
+    And 0.0 reads as "the most extreme low on record" where the truth is "no
+    reading", which is the worst direction for the error to point.
     """
     v = pd.Series([10.0, 20.0, 30.0, 40.0, NAN, 50.0])
-    out = RANKERS[name](v, weekly(6), **SHORT_WINDOW)
+    out = RANKERS[name](v, weekly(6))
     assert pd.isna(out.iloc[4])  # the hole -- NaN, never 0.0
     assert out.notna().iloc[[3, 5]].all()  # ...and only the hole
 
 
-def test_a_hole_does_not_enlarge_the_trailing_denominator() -> None:
+def test_a_hole_does_not_enlarge_the_denominator() -> None:
     """The second half of the same defect. [5, NaN, 1]: 1 is the smaller of the
     two REAL observations, so 50.0. Counting the NaN gives 33.3 and shrinks every
-    rank toward zero in proportion to how gappy the window is."""
-    v, d = pd.Series([5.0, NAN, 1.0]), weekly(3)
-    out = M.trailing_percentile(v, d, window_days=21, min_obs_frac=0.0)
-    assert out.iloc[2] == pytest.approx(50.0)
-    assert out.iloc[2] == pytest.approx(M.expanding_percentile(v).iloc[2])
-
-
-@pytest.mark.parametrize("seed", [0, 7, 13])
-def test_trailing_percentile_over_an_unbounded_window_equals_expanding(seed: int) -> None:
-    """Given a window wide enough to hold everything, the trailing rank IS the
-    expanding rank: same tie convention, same denominator, same holes. The two are
-    rendered side by side, and trailing_percentile is the one screen.py, market.py,
-    crowding.py and base_rates.py all call, so pinning them together is what stops
-    them drifting apart. A 5-value alphabet forces ties (which side of `<=` a
-    repeat falls on), one hole is trailing, and the floor is dropped to its hard
-    minimum of 2 so the publish masks line up with min_history=2.
-    """
-    a = pd.Series(np.random.default_rng(seed).integers(0, 5, size=40).astype(float))
-    a.iloc[[0, 5, 9, 39]] = np.nan
-    np.testing.assert_array_equal(  # exact; NaNs must land in the same places
-        M.trailing_percentile(a, weekly(40), window_days=10**5, min_obs_frac=0.0).to_numpy(),
-        M.expanding_percentile(a, min_history=2).to_numpy(),
-    )
-
-
-# --------------------------------------------------------------------------- #
-# What each windowed ranker actually COMPUTES
-# --------------------------------------------------------------------------- #
-# Causality constrains which observations a window may see, not what is done with
-# them: an inverted index, a population sigma and a rank of the window's OLDEST
-# point are all perfectly causal. Hence hand-computed values.
-def test_cot_index_is_a_min_max_and_is_not_inverted() -> None:
-    """cot_index exists to reproduce published "positioning is at 90" commentary,
-    so its orientation is the whole point: a board reporting 5 where the
-    commentary says 95 is worse than no board. The interior value pins min-max
-    against rank, which is the caveat in its own docstring -- 30 sits halfway
-    across the [10, 50] range but at the 75th percentile of {10, 20, 30, 50}.
-    """
-    v = pd.Series([20.0, 50.0, 10.0, 30.0, 50.0])
-    out = M.cot_index(v, weekly(5), **SHORT_WINDOW)
-    assert out.iloc[2] == 0.0  # the window's min, not its max
-    assert out.iloc[4] == 100.0  # the window's max
-    assert out.iloc[3] == pytest.approx(50.0)  # 100 * (30 - 10) / (50 - 10)
-    assert M.expanding_percentile(v).iloc[3] == pytest.approx(75.0)  # the rank, for contrast
-
-
-def test_trailing_zscore_uses_the_sample_sigma_and_the_mean() -> None:
-    """A z-score is only comparable across markets if everyone agrees on the
-    estimator, and the two plausible wrong answers here are close enough to look
-    right: population sigma gives 1.90 and a median centre 1.98 against the
-    correct 1.70. All three would pass a causality check."""
-    w = np.array([1.0, 2.0, 3.0, 4.0, 10.0])
-    out = M.trailing_zscore(pd.Series(w), weekly(5), **SHORT_WINDOW)
-    assert out.iloc[4] == pytest.approx((w[-1] - w.mean()) / w.std(ddof=1))  # 1.6971
-    assert out.iloc[4] != pytest.approx((w[-1] - w.mean()) / w.std(ddof=0))  # not 1.8974
-    assert out.iloc[4] != pytest.approx((w[-1] - np.median(w)) / w.std(ddof=1))  # not 1.9799
-
-
-def test_the_publish_floor_is_higher_for_a_sigma_than_for_a_rank() -> None:
-    """Two observations are enough to say which is larger and nothing like enough
-    to estimate a spread, so trailing_zscore carries a hard minimum of 3 where the
-    two rankers carry 2. A sample sigma from n=2 is just the gap between the two
-    points over sqrt(2), so every such z-score is exactly +/-0.71 -- the same
-    number for every market, carrying no information at all."""
-    kw = {"window_days": 14, "min_obs_frac": 0.0}  # floor = the hard minimum only
-    two = pd.Series([1.0, 2.0])
-    assert M.trailing_percentile(two, weekly(2), **kw).iloc[1] == 100.0
-    assert M.cot_index(two, weekly(2), **kw).iloc[1] == 100.0
-    assert pd.isna(M.trailing_zscore(two, weekly(2), **kw).iloc[1])
-    three = pd.Series([1.0, 2.0, 3.0])
-    assert M.trailing_zscore(three, weekly(3), window_days=21, min_obs_frac=0.0).iloc[2] == 1.0
-
-
-# --------------------------------------------------------------------------- #
-# The percent-change gate -- semantic, never empirical
-# --------------------------------------------------------------------------- #
-@pytest.mark.parametrize(
-    ("kind", "safe"),
-    [(k, True) for k in sorted(M.UNSIGNED_KINDS)] + [(k, False) for k in sorted(M.SIGNED_KINDS)],
-)
-def test_is_ratio_safe_classifies_every_declared_kind(kind: str, safe: bool) -> None:
-    assert M.is_ratio_safe(kind) is safe
-
-
-def test_is_ratio_safe_refuses_unknown_kind() -> None:
-    """Failing closed is the point: an unclassified kind must not default to
-    'percent change is fine'."""
-    with pytest.raises(ValueError, match="unknown quantity kind"):
-        M.is_ratio_safe("basis_points")
-
-
-def test_is_ratio_safe_cannot_consult_the_data() -> None:
-    """This replaced an empirical check that asked whether a series HAPPENED to
-    cross zero -- which called 78 of 550 tff cohort nets safe, including S&P
-    E-mini asset managers, positive for all 1,055 weeks on record and free to go
-    negative next week. The structural guarantee the bug cannot return is that
-    the function takes no data argument at all."""
-    assert list(inspect.signature(M.is_ratio_safe).parameters) == ["kind"]
-    assert M.is_ratio_safe("net") is False
+    rank toward zero in proportion to how gappy the series is."""
+    v = pd.Series([5.0, NAN, 1.0])
+    assert M.expanding_percentile(v).iloc[2] == pytest.approx(50.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -364,25 +213,25 @@ def test_net_and_gross() -> None:
 
 
 def test_gross_is_negative_on_the_pre_1999_legacy_nonrept_rows() -> None:
-    """"gross" is in UNSIGNED_KINDS, so is_ratio_safe LICENSES a percent change on
-    it. That licence is a statement about the QUANTITY, and the DATA breaks the
-    premise: measured over all seven CFTC datasets, long + short is NEGATIVE on 46 rows
-    -- 29 in legacy_fut (1986-01-15..1997-12-19) and 17 in legacy_futopt
+    """gross is non-negative by CONSTRUCTION and not in the published data.
+
+    Measured over all seven CFTC datasets, long + short is NEGATIVE on 46 rows --
+    29 in legacy_fut (1986-01-15..1997-12-19) and 17 in legacy_futopt
     (1998-07-07..1998-12-29), every one the `nonrept` cohort, worst -228,000
     contracts on code 005601 in 1986. The row below is published 148776 /
     1998-12-22 / nonrept: long -3,999 and short -3,726 against an open interest of
-    957. A percent change across it inverts its own sense, which is what rule 3
-    exists to prevent, and the gate cannot see it. 46 of 4,087,353 rows is 0.001%,
-    but legacy is the only pre-2006 history, so long-history charts cross them.
+    957. 46 of 4,087,353 rows is 0.001%, but legacy is the only pre-2006 history,
+    so long-history charts cross them.
+
+    Left as published rather than clamped, and this test is what says so
+    deliberately: a clamp would hide a bad input instead of showing it, and the
+    board's own panel description carries the caveat. The knock-on is that a share
+    derived from such a row is out of range too -- -417.87% below -- which is why
+    share_of is not range-guarded either.
     """
     assert M.gross(pd.Series([-3999.0]), pd.Series([-3726.0])).iloc[0] == -7725.0
-    assert M.is_ratio_safe("gross") is True  # granted anyway, and rightly
-    # The knock-on: a share built on that long is out of range, so clamp_percentage
-    # is NOT inert on quantities derived from legacy rows even though it is inert
-    # on the stored concentration columns.
     share = M.share_of(pd.Series([-3999.0]), pd.Series([957.0]))
     assert share.iloc[0] == pytest.approx(-417.87, abs=0.01)
-    assert M.clamp_percentage(share).isna().all()
 
 
 def test_directional_oi_treats_null_spread_as_zero() -> None:
@@ -499,38 +348,6 @@ def test_asof_handles_empty_inputs() -> None:
     assert M.asof(at, pd.Series([1.0]), empty).empty
 
 
-def test_price_is_a_known_unsigned_quantity() -> None:
-    """A price level is positive, so a percent change on it is meaningful -- and the
-    gate must have an OPINION rather than raising when a panel formats one."""
-    assert M.is_ratio_safe("price") is True
-    assert "price" in M.UNSIGNED_KINDS
-
-
-def test_clamp_percentage_drops_impossible_prints() -> None:
-    """A percentage outside [0, 100] is a broken input and NaN is the honest render
-    of one -- but on the COMMITTED data this guard never fires, and saying so is
-    half the point of the test.
-
-    The 482.6% top-8 long concentration lives in the RAW legacy payload.
-    sources/cftc.parse() already drops anything outside [0, CONC_VALID_MAX], so max
-    conc_* is exactly 100.00 in all seven files and no cell exceeds it across
-    4,087,353 rows; code 148776's 957-contract market-weeks read NaN in every
-    conc_* column, which is that clamp's fingerprint. This layer is therefore
-    defence for a future ingest, not a guard doing work today.
-
-    Both bounds are inclusive and the upper one is load-bearing: 158 tff rows
-    report a top-8 concentration of exactly 100.0 (lib/cftc_spec.CONC_FIELDS), so
-    an exclusive bound would blank real readings. The two layers have to agree on
-    that boundary, hence the default is asserted against the ingest constant
-    instead of restated as a literal.
-    """
-    hi = cftc_spec.CONC_VALID_MAX
-    assert inspect.signature(M.clamp_percentage).parameters["hi"].default == hi
-    out = M.clamp_percentage(pd.Series([482.6, hi, -1.0, 0.0, 50.0, np.nan]))
-    assert out.isna().tolist() == [True, False, True, False, False, True]
-    assert out.dropna().tolist() == [hi, 0.0, 50.0]
-
-
 # --------------------------------------------------------------------------- #
 # Flow: never mislabel a horizon
 # --------------------------------------------------------------------------- #
@@ -550,57 +367,6 @@ def test_flow_at_a_longer_horizon_uses_the_calendar_not_the_row_count() -> None:
     out = M.flow(pd.Series([10.0, 20.0, 45.0, 50.0]), dates, horizon_weeks=2)
     assert out.iloc[2] == 35.0  # 2 rows back AND 2 weeks back
     assert pd.isna(out.iloc[3])  # 2 rows back is 3 weeks back
-
-
-def test_net_flow_balances_measures_the_cross_cohort_identity() -> None:
-    """Every contract has two sides, so a week's net buying summed over all cohorts
-    is zero up to the publisher's rounding. Free invariant, and it is what catches
-    a dropped cohort, a bad field map or a misaligned join -- each of which
-    produces perfectly plausible individual series.
-
-    The function returns the MEASUREMENT and the caller applies the tolerance, and
-    that split is pinned structurally because an earlier signature took a `tol`
-    argument and never used it: a caller passing tol=3 silently got no check at
-    all. The tolerance is cftc_spec.FLOW_TOL, twice the level tolerance because a
-    flow is a difference of two independently rounded levels.
-    """
-    assert list(inspect.signature(M.net_flow_balances).parameters) == ["flows_by_cohort"]
-    assert cftc_spec.FLOW_TOL == 2.0 * cftc_spec.NET_ZERO_TOL
-
-    flows = pd.DataFrame(
-        {
-            "dealer": [1000.0, 1000.0],
-            "asset_mgr": [-600.0, -600.0],
-            "lev_money": [-403.0, -360.0],
-        }
-    )
-    out = M.net_flow_balances(flows)
-    np.testing.assert_allclose(out.to_numpy(), [-3.0, 40.0])
-    # row 0 is rounding, row 1 is a real break
-    assert (out.abs() <= cftc_spec.FLOW_TOL).tolist() == [True, False]
-    # ...and this is what a dropped cohort looks like: the residual becomes the
-    # missing cohort's whole flow, so both rows breach.
-    dropped = M.net_flow_balances(flows.drop(columns=["lev_money"]))
-    assert (dropped.abs() > cftc_spec.FLOW_TOL).all()
-    # The trap, pinned because a caller has to work around it: sum(axis=1) SKIPS
-    # NaN, so a row where NO cohort flow is computable returns a clean 0.0 and
-    # reads as a perfect balance. The caller must count usable cohorts itself --
-    # panels/flows.py does exactly that and says so.
-    assert M.net_flow_balances(pd.DataFrame({"a": [NAN], "b": [NAN]})).iloc[0] == 0.0
-
-
-@pytest.mark.parametrize(
-    ("days", "weeks"),
-    [(7, 1.0), (14, 2.0), (6, 1.0), (8, 1.0), (3, 0.0), (3255, 465.0), (12341, 1763.0)],
-)
-def test_weeks_between_and_weeks_elapsed_agree_and_round(days: int, weeks: float) -> None:
-    """Every CFTC gap is a multiple of 7 days to within one, so round(days/7) is
-    exact. 3255 is the E-mini Russell hole, 12341 the 191691 aluminium hole."""
-    base = pd.Timestamp("2000-01-07")
-    dates = pd.Series([base, base + pd.Timedelta(days=days)])
-    assert M.weeks_between(dates, 1).iloc[1] == weeks
-    assert S.weeks_elapsed(dates).iloc[1] == weeks
-    assert pd.isna(M.weeks_between(dates, 1).iloc[0])
 
 
 # --------------------------------------------------------------------------- #
@@ -664,12 +430,9 @@ def test_segment_ids_splits_the_2023_05_02_nasdaq_rebasing() -> None:
     units = pd.Series(["(NASDAQ 100 INDEX X $100)"] * 3 + ["(NASDAQ 100 INDEX X $20)"] * 2)
     assert S.segment_ids(dates, units).tolist() == [0, 0, 0, 1, 1]
     assert S.segment_ids(dates).tolist() == [0] * 5  # invisible without units
-    assert S.last_segment_mask(dates, units).tolist() == [False, False, False, True, True]
-
-    described = S.describe_segments(dates, units)
-    assert described["reports"].tolist() == [3, 2]
-    assert str(described["start"].iloc[1]) == "2023-05-02"
-    assert described["unit_signature"].tolist() == ["100100", "10020"]
+    # The signatures the split turns on, so a change to the parser shows up here
+    # rather than as a seam that silently stops being detected.
+    assert [S.unit_signature(u) for u in units] == ["100100"] * 3 + ["10020"] * 2
 
 
 def test_segment_ids_splits_the_191691_code_reuse() -> None:
@@ -696,7 +459,6 @@ def test_segment_ids_gap_threshold_is_91_days_inclusive(gap_days: int, n_segment
 def test_segment_ids_consecutive_identical_units_give_one_segment() -> None:
     dates, units = weekly(20, "2024-01-05"), pd.Series(["(CONTRACTS OF 5,000 BUSHELS)"] * 20)
     assert S.segment_ids(dates, units).tolist() == [0] * 20
-    assert S.last_segment_mask(dates, units).all()
 
 
 @pytest.mark.parametrize("null", [None, np.nan, ""])
@@ -728,29 +490,25 @@ def test_segment_ids_preserves_the_caller_index() -> None:
     back to that slice's index, not to a fresh 0..n range."""
     dates = pd.Series(pd.to_datetime(["2020-01-03", "2020-01-10", "2021-06-04"]), index=[11, 22, 33])
     assert S.segment_ids(dates).index.tolist() == [11, 22, 33]
-    assert S.last_segment_mask(dates).index.tolist() == [11, 22, 33]
 
 
-def test_last_segment_mask_selects_only_the_final_segment() -> None:
+def test_a_long_gap_opens_a_new_segment_id() -> None:
+    """The ids themselves are what scripts/build ranks within, so the boundary
+    has to land on the right row and not merely somewhere."""
     dates = pd.Series(
         pd.to_datetime(["2019-01-04", "2019-01-11", "2021-01-08", "2021-01-15", "2021-01-22"])
     )
-    mask = S.last_segment_mask(dates)
-    assert mask.tolist() == [False, False, True, True, True]
-    assert S.segment_ids(dates)[mask].nunique() == 1
+    assert S.segment_ids(dates).tolist() == [0, 0, 1, 1, 1]
 
 
 def test_empty_inputs_do_not_raise() -> None:
-    """A market can be filtered to nothing by a cohort or tier selection, and a
-    panel should render an empty chart rather than a traceback."""
+    """A market can be filtered to nothing by a cohort or tier selection, and the
+    build should produce no rows rather than a traceback."""
     empty_dates = pd.Series([], dtype="datetime64[ns]")
     empty_values = pd.Series([], dtype=float)
     assert S.segment_ids(empty_dates).tolist() == []
-    assert S.last_segment_mask(empty_dates).tolist() == []
-    assert S.weeks_elapsed(empty_dates).tolist() == []
-    assert len(S.describe_segments(empty_dates)) == 0
     assert len(M.expanding_percentile(empty_values)) == 0
-    assert pd.isna(M.last_percentile(empty_values))
+    assert len(M.flow(empty_values, empty_dates)) == 0
 
 
 # ----------------------------------------------- ETF creation/redemption flow

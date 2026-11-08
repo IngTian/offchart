@@ -65,17 +65,24 @@ def main() -> int:
         print(f"  {'source':<22} {'rows':>11}  {'latest':<12} {'age':>6}  cadence")
         print(f"  {'-' * 22} {'-' * 11}  {'-' * 12} {'-' * 6}  {'-' * 12}")
 
-        for src in sources.all_sources():
-            if not db.has_table(con, src.id):
-                print(f"  {src.id:<22} {'-':>11}  {'not ingested':<12} {'':>6}  "
+        # Grouped by BRACKET rather than listed flat. Sources within a bracket share
+        # a frame shape and a serving table, so they are the set a reader compares
+        # against each other -- a flows source two days stale next to one five days
+        # stale is a fact about the issuers, while a flows source beside a weekly
+        # CFTC one is not a comparison at all.
+        for group, srcs in sorted(sources.by_group().items()):
+            print(f"  {group.lower()}")
+            for src in srcs:
+                if not db.has_table(con, src.id):
+                    print(f"    {src.id:<20} {'-':>11}  {'not ingested':<12} {'':>6}  "
+                          f"{_short(src.cadence)}")
+                    continue
+                rows = con.execute(f'SELECT count(*) FROM "{src.id}"').fetchone()[0]
+                latest = db.latest_date(con, src.id, src.sort_key[0])
+                age = _age_days(latest)
+                flag = "" if age is None else f"{age}d"
+                print(f"    {src.id:<20} {rows:>11,}  {str(latest):<12} {flag:>6}  "
                       f"{_short(src.cadence)}")
-                continue
-            rows = con.execute(f'SELECT count(*) FROM "{src.id}"').fetchone()[0]
-            latest = db.latest_date(con, src.id, src.sort_key[0])
-            age = _age_days(latest)
-            flag = "" if age is None else f"{age}d"
-            print(f"  {src.id:<22} {rows:>11,}  {str(latest):<12} {flag:>6}  "
-                  f"{_short(src.cadence)}")
 
         print()
         for table in SERVING:

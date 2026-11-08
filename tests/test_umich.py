@@ -13,17 +13,15 @@ which is a property of this repo rather than of their numbers.
 """
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from lib import db, metrics, umich_spec
+from sources import umich
 
-from lib import db, metrics, umich_spec  # noqa: E402
-from sources import umich  # noqa: E402
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def _frame(months: list[str], **columns) -> pd.DataFrame:

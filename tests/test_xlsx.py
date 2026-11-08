@@ -9,14 +9,12 @@ wrong numbers.
 from __future__ import annotations
 
 import io
-import sys
 import zipfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from lib import xlsx
 
-from lib import xlsx  # noqa: E402
+ROOT = Path(__file__).resolve().parent.parent
 
 SHARED = """<?xml version="1.0"?>
 <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="4" uniqueCount="4">

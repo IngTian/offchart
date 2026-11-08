@@ -17,15 +17,15 @@ WHAT THIS COSTS, STATED PLAINLY. An arbitrary subset can still be charted -- coh
 shares are additive over a common denominator, so the LEVEL is exact for any
 combination. What it cannot have is a rank, because the rank is not additive. So an
 undeclared combination gets a line and a blank percentile, which is the same rule
-panels/positioning._hero already follows for a series too short to rank. Adding a
-group is one line here plus a rebuild.
+a series too short to rank already follows. Adding a group is one line here plus a
+rebuild.
 """
 from __future__ import annotations
 
 #: The grouping each family defaults to: the cohorts whose position is a view rather
-#: than a hedge against physical or a market-making book. Mirrors
-#: panels/positioning._DEFAULT_COHORTS -- if these ever disagree, the Grafana board
-#: and the Streamlit board are answering different questions.
+#: than a hedge against physical or a market-making book. This is the single
+#: definition -- scripts/build reads it and the Grafana dropdown lists what build
+#: wrote, so there is no second copy to disagree with.
 SPECULATIVE = {
     "cftc_tff_fut": ("asset_mgr", "lev_money"),
     "cftc_disagg_fut": ("m_money",),

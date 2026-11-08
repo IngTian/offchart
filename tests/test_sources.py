@@ -19,18 +19,16 @@ do, so these tests ask git rather than trusting the file to say what it means.
 from __future__ import annotations
 
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+import sources
+from lib import db
+from lib.schema import TableSchema
+from sources.base import Source
 
-import sources  # noqa: E402
-from lib import db  # noqa: E402
-from lib.schema import TableSchema  # noqa: E402
-from sources.base import Source  # noqa: E402
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def _dummy_kwargs(**over):
