@@ -26,7 +26,7 @@ from lib import db  # noqa: E402
 #: Tables Grafana reads. Listed separately from the sources because a stale one here
 #: means something different: the fetch worked and the rebuild did not, which is the
 #: exact state `make pull` exists to make unreachable.
-SERVING = ("board_positioning", "board_inflation")
+SERVING = ("board_positioning", "board_inflation", "board_flows")
 
 
 def _age_days(when: str | None) -> int | None:
