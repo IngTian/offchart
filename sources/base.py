@@ -4,9 +4,11 @@ A source is deliberately thin: it knows how to fetch a tidy DataFrame, it
 declares the shape that frame must have, and it carries the caveats that travel
 with its numbers.
 
-The caveats are a FIELD rather than documentation because the display layer
-renders them next to the chart. A limitation that lives only in a README gets
-read without it, which is the same as not existing.
+The caveats are a FIELD rather than prose in a README because they travel with
+the source: whoever adds the next ETF issuer or CFTC family reads this file, and a
+limitation stated here is in front of them. Nothing renders them automatically --
+a Grafana panel carries its own description -- so treat the field as the canonical
+text to copy into a panel description or docs/, not as something already shown.
 """
 from __future__ import annotations
 
@@ -30,8 +32,11 @@ class Source:
     #: Columns that uniquely identify a row, used for upsert dedupe.
     key: tuple[str, ...]
 
-    #: Write order. MUST lead with the date column -- see lib/store, where the
-    #: measured difference is ~480x on git growth.
+    #: Write order. MUST lead with the date column, for two reasons that both
+    #: still hold: it is the column scripts/ingest reads to compute the
+    #: incremental fetch floor, and it is the column that becomes `ts` in the
+    #: serving tables. (The original justification was ~480x git growth on the
+    #: parquet store, which expired with that store.)
     sort_key: tuple[str, ...]
 
     #: Declared shape, checked between fetch and write.
@@ -103,11 +108,12 @@ class Source:
                     "upstream is asserting rights, which means it almost certainly "
                     "requires attribution. Declare `citation`."
                 )
-        # The whole git-churn argument depends on this, so assert it rather than
-        # trusting that nobody reorders the tuple later.
+        # Both the incremental fetch floor and the serving-table `ts` depend on
+        # this, so assert it rather than trusting that nobody reorders the tuple.
         lead = self.sort_key[0]
         if not (lead.endswith("date") or lead.endswith("_date")):
             raise ValueError(
-                f"source {self.id!r} sort_key must lead with the date column so a "
-                f"weekly append is a tail append, got {lead!r}. See lib/store."
+                f"source {self.id!r} sort_key must lead with the date column, "
+                f"because scripts/ingest reads it to compute the incremental "
+                f"fetch floor and scripts/build turns it into `ts`; got {lead!r}."
             )

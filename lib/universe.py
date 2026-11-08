@@ -98,37 +98,18 @@ SUPERSEDED_BY = {
 # So the notionally-correct series has 174 comparable weeks and excludes
 # 2007-2009 entirely -- the most informative positioning episode in the sample --
 # while the notionally-wrong single-leg series has twenty clean years. That is a
-# real trade-off between notional correctness and history, not a bug to fix, and
-# the board surfaces it as a toggle with this text rather than choosing silently.
-CONSOLIDATED_TRADEOFF = (
-    "Consolidated series are notionally correct (E-mini + Micro/10, verified "
-    "against the published figures to under one contract) but short and seamed: "
-    "846 reports from 2010-06-15 with a 5x contract re-basing on 2023-05-02, "
-    "leaving 174 comparable weeks. The single-leg E-mini codes have 1,055 reports "
-    "from 2006-06-13 with no unit break at all. Prefer Consolidated to size "
-    "exposure; prefer the E-mini leg to rank today against history including "
-    "2008."
-)
+# real trade-off between notional correctness and history, not a bug to fix. Both
+# codes are tiered CORE so the reader can hold both: prefer the Consolidated
+# series to size exposure, prefer the single-leg E-mini code to rank today
+# against history that includes 2008.
 
-#: Bitcoin Cash carries cftc_commodity_code 133, identical to CME Bitcoin, so
-#: grouping crypto by commodity code silently folds BCH into BTC. Any
-#: coin-equivalent aggregation therefore needs an explicit per-code map, not a
-#: code-based fold. Multipliers below are read from the contract_units text and
-#: are NOT verifiable against a published Consolidated identity the way the
-#: equity-index 10:1 ratio is -- so anything derived from them is labelled as
-#: text-derived wherever it is shown.
-CRYPTO_UNITS_ARE_TEXT_DERIVED = (
-    "Crypto coin-equivalent sizes are parsed from the free-text contract_units "
-    "field. Unlike the equity-index 10:1 ratio, no published identity exists to "
-    "check them against, and the field is already demonstrably loose -- Bitcoin "
-    "Cash reports units of '(1 Bitcoin)'. Treat coin-notional as indicative."
-)
-
-
-def latest_report_date(df: pd.DataFrame, date_col: str = "report_date") -> pd.Timestamp | None:
-    if df.empty:
-        return None
-    return pd.to_datetime(df[date_col]).max()
+# Bitcoin Cash carries cftc_commodity_code 133, identical to CME Bitcoin, so
+# grouping crypto by commodity code silently folds BCH into BTC. Any
+# coin-equivalent aggregation therefore needs an explicit per-code map, not a
+# code-based fold. Multipliers below are read from the contract_units text and
+# are NOT verifiable against a published Consolidated identity the way the
+# equity-index 10:1 ratio is -- and the field is demonstrably loose, with Bitcoin
+# Cash reporting units of '(1 Bitcoin)'. Treat coin-notional as indicative.
 
 
 def market_summary(df: pd.DataFrame) -> pd.DataFrame:
@@ -242,14 +223,3 @@ def assign_tiers(summary: pd.DataFrame, *, allowlist: set[str] | None = None) ->
     return s
 
 
-def default_market(summary: pd.DataFrame, prefer: tuple[str, ...] = ()) -> str | None:
-    """Pick a landing market: first available preference, else largest CORE."""
-    if summary.empty:
-        return None
-    codes = set(summary["market_code"])
-    for code in prefer:
-        if code in codes:
-            return code
-    core = summary[summary.get("tier", "CORE") == "CORE"]
-    pool = core if not core.empty else summary
-    return str(pool.sort_values("oi_window_max", ascending=False)["market_code"].iloc[0])

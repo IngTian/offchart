@@ -113,8 +113,10 @@ REGIMES: tuple[Regime, ...] = (
         start=WEB_ERA_START,
         excluded=BLEND_MONTHS,
         reason=(
-            "Collection mode changed from cell-phone RDD to address-based web over "
-            "April-July 2024. UMich measured the level shift at -6.6 index points "
+            "Collection mode changed from cell-phone RDD to address-based web. The "
+            "two modes ran side by side over April-June 2024 (the three excluded "
+            "months) and web-only from July 2024, which is why the pool starts "
+            "there. UMich measured the level shift at -6.6 index points "
             "and chose not to adjust the series, so the displacement is inside the "
             "published numbers with no flag."
         ),

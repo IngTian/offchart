@@ -124,11 +124,9 @@ class PriceRef:
     #: index | future | etf -- what the series actually is, for the caption.
     kind: str
     #: One line naming the gap between this series and the reported contract.
+    #: Never empty in practice, because nothing in this map IS the reported
+    #: contract -- every entry is a proxy and the gap is the thing a reader needs.
     proxy: str = ""
-
-    @property
-    def is_exact(self) -> bool:
-        return False  # nothing here is the reported contract itself
 
 
 _IDX = "index"

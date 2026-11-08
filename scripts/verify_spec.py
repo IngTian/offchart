@@ -53,7 +53,7 @@ def check_accounting(spec: cftc_spec.ReportSpec, n: int) -> tuple[bool, str]:
     if not rows:
         return False, "no rows"
 
-    worst_ls = worst_net = worst_resid = 0.0
+    worst_ls = worst_resid = 0.0
     n_checked = 0
     for raw in rows:
         row = cftc_api.normalise_keys(raw)
@@ -76,7 +76,6 @@ def check_accounting(spec: cftc_spec.ReportSpec, n: int) -> tuple[bool, str]:
             continue
         n_checked += 1
         worst_ls = max(worst_ls, abs(tot_long - tot_short))
-        worst_net = max(worst_net, abs((tot_long - tot_short)))
         worst_resid = max(worst_resid, abs(oi - tot_long - tot_spread))
 
     if not n_checked:

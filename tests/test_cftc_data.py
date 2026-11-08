@@ -222,9 +222,11 @@ def test_concentration_is_a_share_of_the_side_total_not_of_open_interest(cftc_fr
     interest minus spread positions -- so the denominator is
     metrics.directional_oi, never open_interest.
 
-    The crowding board renders `conc_gross_4_long / 100 * dir_oi` as a CONTRACT
-    COUNT and captions the denominator, so the wrong reading is not a rounding
-    difference: it overstates by 1/(1 - spread_share). On the BITCOIN week that
+    No board renders these columns today -- they are stored faithfully and read by
+    nobody -- but the denominator is the kind of error that produces a plausible
+    number rather than a crash, so it is pinned here against the day one does.
+    Turning a share into a CONTRACT COUNT against the wrong denominator overstates
+    by 1/(1 - spread_share), which is not a rounding difference. On the BITCOIN week that
     disproves it in the next test, spreads are 26.5% of open interest, so the
     published 78.5% top-8 long share renders as 13,422 contracts against the side
     total and 18,265 against open interest -- 36% more, and 1,167 more contracts
@@ -328,9 +330,12 @@ def _published_change_errors(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def test_the_published_change_columns_reconcile_against_our_own_diff(cftc_frames):
-    """Identity 3, the one cftc_spec.CHANGE_FIELD_TOL exists for and the only one
-    of the three that two boards render directly (panels/integrity metrics and a
-    per-gap disagreement table, panels/flows per-field reconciliation).
+    """Identity 3, the one cftc_spec.CHANGE_FIELD_TOL exists for.
+
+    It is the identity that most directly guards the FIELD MAP, which is why it is
+    checked here against the fixture and again by `make verify` against the live
+    API: a column that still exists but now means something else produces a
+    plausible chart and raises nothing.
 
     Our long.diff() against change_long_published per market and cohort, over
     consecutive published reports. It agrees to within CHANGE_FIELD_TOL on every
@@ -454,9 +459,9 @@ def test_market_week_columns_are_constant_across_cohorts(cftc_frame):
         # ... and they move between market-weeks, so "constant within one" is a
         # real constraint rather than a constant column.
         assert g["conc_gross_4_long"].first().nunique() > 1, f"{source_id}: CR4 never moves"
-        # The parse-time clamp is what makes this true of the stored data --
-        # sources/cftc.parse drops anything outside [0, 100] to NaN, which is why
-        # metrics.clamp_percentage never fires downstream. See cftc_spec.
+        # The parse-time clamp is what makes this true of the stored data, and it
+        # is the ONLY layer doing it -- sources/cftc.parse drops anything outside
+        # [0, CONC_VALID_MAX] to NaN, with no second guard downstream. See cftc_spec.
         worst = float(df[conc_cols].max(numeric_only=True).max())
         assert worst <= cftc_spec.CONC_VALID_MAX, f"{source_id}: a concentration reads {worst}"
     else:
@@ -835,11 +840,10 @@ def test_a_superseded_leg_never_reaches_core(tff_fut):
     promoted = universe.assign_tiers(unsuperseded)
     assert promoted.loc[promoted["market_code"] == NASDAQ_EMINI, "tier"].iloc[0] == "CORE"
 
-    # The Consolidated series itself is always on the default screen, and the
-    # cost of preferring it -- 174 comparable weeks against 1,055 reports on the
-    # single-leg code -- is text the board has to render rather than decide.
+    # The Consolidated series itself is always on the default screen, so the
+    # reader can hold both it and the longer single-leg history side by side --
+    # 174 comparable weeks against 1,055 reports -- rather than one hiding the other.
     assert tiered.loc[tiered["market_code"] == "20974+", "tier"].iloc[0] == "CORE"
-    assert "2023-05-02" in universe.CONSOLIDATED_TRADEOFF
 
 
 def test_market_summary_labels_a_code_with_its_latest_name(legacy_fut):

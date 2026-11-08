@@ -26,14 +26,11 @@ from __future__ import annotations
 
 import json
 import re
-import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-
 DASH_DIR = ROOT / "grafana" / "dashboards"
 DASHBOARDS = sorted(DASH_DIR.glob("*.json"))
 

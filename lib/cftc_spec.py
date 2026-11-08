@@ -337,12 +337,15 @@ CONC_FIELDS = (
 # conc_gross_le_8_tdr_long = 482.6 on open interest of 957. disagg and tff have
 # none.
 #
-# sources/cftc.parse() drops anything outside [0, 100] to NaN, so the COMMITTED
-# data contains no such value -- max conc_* is exactly 100.00 in all seven files
-# and no cell exceeds it across 4,087,353 rows. metrics.clamp_percentage is
-# therefore currently inert on stored data, and is defence for a future ingest
-# rather than a guard that fires today. Worth knowing before someone "simplifies"
-# either layer away: it is the parse-time clamp doing the work.
+# sources/cftc.parse() drops anything outside [0, 100] to NaN, so the STORED data
+# contains no such value -- max conc_* is exactly 100.00 in all seven files and no
+# cell exceeds it across 4,087,353 rows, and code 148776's 957-contract
+# market-weeks read NaN in every conc_* column, which is this clamp's fingerprint.
+# The parse-time clamp is the ONLY layer doing this work: there is no second guard
+# downstream, so deleting it would put 482.6 on a chart. The bound is inclusive and
+# that is load-bearing -- 158 tff rows report a top-8 concentration of exactly
+# 100.0, so an exclusive bound would blank real readings.
+# (tests/test_cftc_data asserts no stored concentration exceeds this.)
 CONC_VALID_MAX = 100.0
 
 META_FIELDS = (
@@ -511,7 +514,8 @@ BY_ID: dict[str, ReportSpec] = {s.id: s for s in SPECS}
 # A tolerance of 3 on net fires on 0 of 1,046,369 triples (corpus max is 3).
 # A tolerance of 4 on the residual is the corpus max. Both are set one wider
 # than the observed maximum and are reported as WARNINGS, not failures: a real
-# break should be visible on the integrity board, not silently abort ingest.
+# break should surface in `make verify` output and leave the rows readable,
+# not silently abort an ingest over the publisher's own rounding.
 NET_ZERO_TOL = 4.0
 OI_RESIDUAL_TOL = 5.0
 

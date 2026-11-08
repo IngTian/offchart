@@ -2,9 +2,9 @@
 
 WHY A DATABASE AT ALL, AND WHY THIS ONE
 
-The display layer is moving to Grafana, which reads SQL and not parquet. Of the
-databases Grafana can talk to, exactly three are built in -- MSSQL, MySQL,
-PostgreSQL -- and all three are servers. Every serverless option is a plugin.
+The display layer is Grafana, which reads SQL and not parquet. Of the databases
+Grafana can talk to, exactly three are built in -- MSSQL, MySQL, PostgreSQL --
+and all three are servers. Every serverless option is a plugin.
 
 SQLite is chosen over Postgres for one reason that outranks the rest: it is the only
 choice that leaves NO ALWAYS-ON SERVICE ANYWHERE. Grafana becomes a stateless
@@ -111,11 +111,22 @@ def _sqlite_type(dtype) -> str:
 
 
 def ddl_for(source_id: str, frame: pd.DataFrame, key: tuple[str, ...]) -> str:
-    """CREATE TABLE for one source, typed from the frame lib.store would have stored.
+    """CREATE TABLE for one source, typed from the FIRST frame ever written.
 
-    The dtypes come from `store._tighten`, which is a declared and tested
-    normalisation rather than raw upstream data -- so the schema is derived from
-    something with tests on it, not inferred from whatever happened to arrive today.
+    Read that literally, because it is a hazard and not a design: the column types
+    come from `frame.dtypes` as fetched, and `CREATE TABLE IF NOT EXISTS` then
+    freezes them for the life of the table. An earlier docstring here claimed the
+    dtypes came from a tested `store._tighten` normalisation; that module is
+    deleted and the guarantee went with it.
+
+    The consequence is measurable in the live store today: all seven cftc_* tables
+    carry long/short/spread/open_interest/traders_* as STRICT INTEGER, because the
+    first pull happened to contain no nulls and pandas inferred int64, while
+    lib/cftc_api.num returns `float | None` so a fresh table built by today's code
+    gets REAL. Every pull since has survived only because STRICT silently coerces
+    a whole-number REAL into an INTEGER column -- one fractional published figure
+    raises `IntegrityError: cannot store REAL value in INTEGER column` mid-write.
+
     WITHOUT ROWID because every table here is keyed by its natural key and the
     implicit rowid would be a second, useless index.
     """
