@@ -3,6 +3,14 @@
 The short version: **the code is MIT, the data is not this repo's to license, and no
 dataset from any source is stored here — now or in its history.**
 
+**The MIT licence in [LICENSE](../LICENSE) covers the CODE ONLY. It does not and cannot
+cover the data.** None of the data this repository fetches belongs to its author, so
+none of it is licensed there. `LICENSE` is deliberately nothing but the MIT text —
+appending this section to it is what made GitHub classify the repo as
+`license: other / NOASSERTION`, and a licence file a tool cannot identify is worse for
+a downstream user than one it can. The data position lives here instead, where it has
+room to be complete.
+
 The longer version matters because it is the reason two obvious series are missing.
 
 ## What "this repository contains no data" settles, and what it does not
@@ -83,6 +91,13 @@ means:
 
 And every source serves its own history back, so losing the file costs one
 `make backfill`. That is the whole recovery story: nothing here is kept only by us.
+
+**If you add a source, record its terms on the `Source` declaration itself**, verbatim
+and with a URL, rather than in a file like this one. A source marked
+`redistributable=False` is forbidden by the test suite from having any committed
+artefact, and the dataclass refuses to construct one without `license` and `citation` —
+which is what keeps this page descriptive rather than aspirational. The per-source
+docstrings are authoritative; everything here is a summary of them.
 
 ## The rule that used to pull the other way
 
