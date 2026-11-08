@@ -99,7 +99,7 @@
         "uid": "offchart"
       },
       "title": "Latest reading \u2014 ${market:text} \u00b7 ${group:text}",
-      "description": "The newest row for this market and cohort, regardless of the time picker -- the Report date tile is what makes that honest. The percentile is CAUSAL: each week is ranked only against weeks at or before itself, computed in pandas and never in SQL. It is blank where the pool is under 140 weeks, because a rank off a short history renders exactly as confidently as one off twenty years. Open interest and its percentile are market-level, identical on every cohort row, so they live in their own panels rather than being printed here as if they described this cohort.",
+      "description": "The newest row for this market and cohort, regardless of the time picker -- so it does not move when you pan or zoom, while every chart below does; the table beside it reads the same week. The percentile is CAUSAL: each week is ranked only against weeks at or before itself, computed in pandas and never in SQL. It is blank where the pool is under 140 weeks, because a rank off a short history renders exactly as confidently as one off twenty years. Open interest and its percentile are market-level, identical on every cohort row, so they live in their own panels rather than being printed here as if they described this cohort.",
       "gridPos": {
         "h": 9,
         "w": 7,
@@ -114,8 +114,8 @@
             "uid": "offchart"
           },
           "queryType": "table",
-          "rawQueryText": "SELECT report_date AS 'Report date', share AS '% of open interest', CASE WHEN n_pool >= 140 THEN share_pctile END AS 'Percentile of own history', chg_2w AS '2-week change (pp)' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' ORDER BY ts DESC LIMIT 1",
-          "queryText": "SELECT report_date AS 'Report date', share AS '% of open interest', CASE WHEN n_pool >= 140 THEN share_pctile END AS 'Percentile of own history', chg_2w AS '2-week change (pp)' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' ORDER BY ts DESC LIMIT 1",
+          "rawQueryText": "SELECT share AS '% of open interest', CASE WHEN n_pool >= 140 THEN share_pctile END AS 'Percentile of own history', chg_2w AS '2-week change (pp)' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' ORDER BY ts DESC LIMIT 1",
+          "queryText": "SELECT share AS '% of open interest', CASE WHEN n_pool >= 140 THEN share_pctile END AS 'Percentile of own history', chg_2w AS '2-week change (pp)' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' ORDER BY ts DESC LIMIT 1",
           "timeColumns": []
         }
       ],
@@ -134,7 +134,7 @@
         "graphMode": "none",
         "justifyMode": "auto",
         "text": {
-          "titleSize": 13,
+          "titleSize": 20,
           "valueSize": 36
         }
       },
