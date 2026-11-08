@@ -46,7 +46,27 @@ These are the ones a reader will otherwise misread. The full set of data caveats
 - **`chg_2w` is in CONTRACTS, not percent.** No signed quantity in this repo is ever
   expressed as a ratio — see `lib/metrics.py`'s convention 2 for the reason and the
   measurement behind it.
-- **`share` is a percentage of open interest**, 0–100, not a fraction.
+- **`open_interest` is a MARKET figure, not a cohort one.** CFTC publishes one number
+  per market-week and `scripts/build` repeats it verbatim on every cohort row, because
+  it is the denominator rather than a property of the cohort. A cohort has no open
+  interest of its own.
+- **`gross` is `long + short`, and it is NOT the cohort's share of the market.** It is
+  book size — how much there is to unwind. Summed across the cohorts of one
+  market-week it comes to roughly **1.8× open interest**, because every contract is
+  counted twice (once on its long side, once on its short) while spreads are excluded
+  from both. The identity that does hold is
+  `sum(long) == sum(short) == open_interest − sum(spread)`, a spread position being
+  long one expiry and short another and so belonging to neither side. Measured on
+  E-mini S&P 500's latest week: both sides 1,750,380, open interest 1,986,532, and the
+  236,152 difference equals the archive's `sum(spread)` exactly.
+- **`share` is a percentage of open interest**, 0–100, not a fraction — and the
+  denominator is the FULL published open interest, spreads included. Note that this
+  differs from the concentration columns below, which are shares of the side total
+  (open interest *minus* spreads). Both conventions are defensible and they are not
+  interchangeable: on E-mini S&P the same net reads 46.74% of open interest or 53.05%
+  of the side total, and on 3-month SOFR, which is 44.5% spreads, the two differ by
+  1.8×. `lib/metrics.directional_oi` computes the ex-spread denominator; `build` does
+  not currently use it.
 - **`purity` is `net / gross`**, in [−1, 1], and it CHANGES SIGN. Near 0 means a large
   two-sided book with little net view; ±1 means every contract points the same way.
 - **`segment_id` is the comparability unit.** Ranks are computed within a segment, which

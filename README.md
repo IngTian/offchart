@@ -1,5 +1,9 @@
 # offchart
 
+[![tests](https://img.shields.io/github/actions/workflow/status/IngTian/offchart/tests.yml?branch=main&label=tests)](https://github.com/IngTian/offchart/actions/workflows/tests.yml)
+[![License](https://img.shields.io/github/license/IngTian/offchart)](LICENSE)
+[![data](https://img.shields.io/badge/data-none%20committed-blue)](docs/licensing.md)
+
 **The data TradingView doesn't carry, in a database Grafana can read.**
 
 Positioning, fund flows and survey expectations are free and reproducible from primary
@@ -11,6 +15,8 @@ It owns **data and preprocessing**. It owns no charting code. Rendering is Grafa
 provisioned from committed JSON — because a hand-maintained chart layer cost more than
 the data ever did, and Grafana already does crosshairs, zoom, fullscreen and export
 better than a bespoke one will.
+
+![The CFTC board: the week's headline reading beside every cohort's long, short, gross, net and directional purity, over twenty years of E-mini S&P 500 positioning](https://raw.githubusercontent.com/IngTian/offchart/main/assets/board.png)
 
 ## Is this you?
 
@@ -83,6 +89,12 @@ question needs breadth and it turns out to be affordable.
 group's position as a share of open interest against its own history, with long, short,
 gross and directional purity beside the net, the underlying price above and open
 interest below.
+
+A net of zero is two different animals — a cohort holding nothing, or a cohort holding a
+large book on both sides — and the net cannot tell them apart. So both sides are drawn,
+with their envelope:
+
+![Long, short and gross for asset managers plus hedge funds in E-mini S&P 500: the two sides diverge and converge under a gross envelope that peaked at 4.5 million contracts](https://raw.githubusercontent.com/IngTian/offchart/main/assets/both-sides.png)
 
 **ETF flows** — creation and redemption in dollars for 23 funds across six index
 families, leveraged and unleveraged together, plus the mechanical rebalancing a 1% index
