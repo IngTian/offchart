@@ -56,8 +56,22 @@ from lib.schema import TableSchema
 
 UA = {"User-Agent": "offchart research (personal, low volume)"}
 
+#: SSGA publishes one NAV-history workbook per SPDR, at a predictable path.
+#: Verified live: spy, gld, dia, xlk, gldm and mdy all return 200. Non-SPDRs do
+#: not exist here -- navhist-us-en-qqq.xlsx is a 404, which is why the Nasdaq-100
+#: has no unleveraged fund on this board.
 SSGA_URL = ("https://www.ssga.com/library-content/products/fund-data/etfs/us/"
-            "navhist-us-en-spy.xlsx")
+            "navhist-us-en-{ticker}.xlsx")
+
+#: SPDR ticker -> (fund name, index family). Kept small deliberately: each entry is
+#: a fund someone will actually read beside its leveraged counterparts.
+SSGA_FUNDS = {
+    "SPY": ("SPDR S&P 500 ETF Trust", "SPX"),
+    # The unleveraged side of gold, and two orders of magnitude larger than either
+    # ProShares leveraged gold fund. Unlike those, GLD holds bullion rather than
+    # futures, so its NAV is a spot-backed price and not a rolling futures one.
+    "GLD": ("SPDR Gold Shares", "GOLD"),
+}
 #: The header SSGA's workbook must still have. Anchored on text, never on a row
 #: offset: the header sits at the third row today, which is true rather than
 #: promised, and disclosure prose occupies the rows around it.
@@ -134,15 +148,16 @@ def _frame(records: list[dict]) -> pd.DataFrame:
     return frame.sort_values(["trade_date", "ticker"]).reset_index(drop=True)
 
 
-def fetch_spy(since: str | None = None) -> pd.DataFrame:
-    """SPY's whole NAV history. `since` ignored: one static file, no parameters.
+def _fetch_ssga(ticker: str) -> pd.DataFrame:
+    """One SPDR's whole NAV history. No parameters, so no `since` to honour.
 
-    Rows arrive newest-first and are sorted on the way out. Shares outstanding is the
-    literal '-' for 2003-12-01..2006-05-30 (628 rows) and numeric from 2006-05-31, so
-    NAV exists three years before a flow can be computed; those rows are kept, with a
-    null share count, and the first computable flow is 2006-06-01.
+    Rows arrive newest-first and are sorted on the way out. SPY's shares outstanding
+    is the literal '-' for 2003-12-01..2006-05-30 (628 rows) and numeric from
+    2006-05-31, so NAV exists three years before a flow can be computed; those rows
+    are kept with a null share count and the first computable flow is 2006-06-01.
     """
-    names, body = _table(SSGA_URL, SSGA_HEADER)
+    fund_name, family = SSGA_FUNDS[ticker]
+    names, body = _table(SSGA_URL.format(ticker=ticker.lower()), SSGA_HEADER)
     i_date, i_nav = names.index("date"), names.index("nav")
     i_so, i_tna = names.index("shares outstanding"), names.index("total net assets")
 
@@ -156,15 +171,23 @@ def fetch_spy(since: str | None = None) -> pd.DataFrame:
             continue
         out.append({
             "trade_date": day,
-            "ticker": "SPY",
-            "fund_name": "SPDR S&P 500 ETF Trust",
-            "index_family": "SPX",
+            "ticker": ticker,
+            "fund_name": fund_name,
+            "index_family": family,
             "multiple": 1.0,
             "nav": nav,
             "shares_outstanding": _num(row[i_so]),
             "assets": _num(row[i_tna]),
         })
     return _frame(out)
+
+
+def fetch_spy(since: str | None = None) -> pd.DataFrame:
+    return _fetch_ssga("SPY")
+
+
+def fetch_gld(since: str | None = None) -> pd.DataFrame:
+    return _fetch_ssga("GLD")
 
 
 def fetch_smh(since: str | None = None) -> pd.DataFrame:
@@ -259,6 +282,32 @@ def build_sources():
                 "SSGA's terms bar dissemination of site content, so this is "
                 "redistributable=False: fetching and rendering locally is fine, "
                 "shipping a snapshot or a derived table is not.",
+            ),
+        )),
+        Source(**_kwargs(
+            id="gld_flows",
+            label="GLD flows (State Street)",
+            fetch=fetch_gld,
+            cadence="Daily, the file is overwritten in place with the latest close",
+            license=(
+                "SSGA Terms and Conditions (ssga.com/us/en/footer/terms-and-conditions): "
+                '"You may not copy, reproduce, duplicate, modify, adopt or lend, sell, '
+                "disseminate or otherwise transfer, in whole or in part, any of the "
+                "information contained in this Site, except for the purpose of accessing "
+                'the Site and producing print-outs for your own personal use". Nothing '
+                "in the terms or in robots.txt restricts automated access."
+            ),
+            citation="Source: State Street Global Advisors (SPDR).",
+            provenance=(
+                "ssga.com/library-content/products/fund-data/etfs/us/"
+                "navhist-us-en-gld.xlsx, same four columns as the SPY workbook."
+            ),
+            caveats=(
+                "GLD holds BULLION, while ProShares' leveraged gold funds hold "
+                "futures. So GLD's NAV is a spot-backed price and theirs track a "
+                "rolling futures position -- comparable as flows, not as prices.",
+                "SSGA's terms bar dissemination of site content, so this is "
+                "redistributable=False.",
             ),
         )),
         Source(**_kwargs(

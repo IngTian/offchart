@@ -770,7 +770,7 @@
         "uid": "offchart"
       },
       "title": "Forced to trade per 1% move in $family \u2014 by leverage",
-      "description": "What a 1% move in this index obliges ProShares' funds to trade, split by multiple: (multiple^2 - multiple) x assets x 1%. STACKED, and here that is correct rather than the usual error -- these are disjoint funds on the same index, and their demand genuinely adds. Note -3x carries coefficient 12 against +3x's 6, so an inverse fund rebalances twice as hard per dollar of assets; and the bull and bear sides add rather than offset, because a bear fund's short exposure grows as the index falls, so it must buy too. One issuer only: Direxion is absent because it publishes no history, and it is the larger house in the chip complex.",
+      "description": "What a 1% move in this index obliges ProShares' funds to trade, split by multiple: (multiple^2 - multiple) x assets x 1%. STACKED, and here that is correct rather than the usual error -- these are disjoint funds on the same index, and their demand genuinely adds. Note -3x carries coefficient 12 against +3x's 6, so an inverse fund rebalances twice as hard per dollar of assets; and the bull and bear sides add rather than offset, because a bear fund's short exposure grows as the index falls, so it must buy too.\n\nThere is no +1x series because there is nothing to draw: an unleveraged fund's coefficient is exactly zero. A -1x fund is NOT zero -- its coefficient is 2, the same as a +2x -- which is why an inverse fund a fraction of the size of its unleveraged twin still shows up here.\n\nOne issuer only. Direxion is absent because it publishes no history, and it is the larger house in the chip complex; SSG covers the short semis leg instead, at 2x and a fraction of SOXS's size.",
       "gridPos": {
         "h": 8,
         "w": 24,
@@ -785,8 +785,8 @@
             "uid": "offchart"
           },
           "queryType": "time series",
-          "rawQueryText": "SELECT ts/1000 AS time, MAX(CASE WHEN multiple = 3.0 THEN rebalance_1pct_usd END) AS '+3x', MAX(CASE WHEN multiple = 2.0 THEN rebalance_1pct_usd END) AS '+2x', MAX(CASE WHEN multiple = -2.0 THEN rebalance_1pct_usd END) AS '-2x', MAX(CASE WHEN multiple = -3.0 THEN rebalance_1pct_usd END) AS '-3x' FROM board_flows WHERE index_family='$family' AND ts BETWEEN $__from AND $__to GROUP BY ts ORDER BY ts",
-          "queryText": "SELECT ts/1000 AS time, MAX(CASE WHEN multiple = 3.0 THEN rebalance_1pct_usd END) AS '+3x', MAX(CASE WHEN multiple = 2.0 THEN rebalance_1pct_usd END) AS '+2x', MAX(CASE WHEN multiple = -2.0 THEN rebalance_1pct_usd END) AS '-2x', MAX(CASE WHEN multiple = -3.0 THEN rebalance_1pct_usd END) AS '-3x' FROM board_flows WHERE index_family='$family' AND ts BETWEEN $__from AND $__to GROUP BY ts ORDER BY ts",
+          "rawQueryText": "SELECT ts/1000 AS time, MAX(CASE WHEN multiple = 3.0 THEN rebalance_1pct_usd END) AS '+3x', MAX(CASE WHEN multiple = 2.0 THEN rebalance_1pct_usd END) AS '+2x', MAX(CASE WHEN multiple = -1.0 THEN rebalance_1pct_usd END) AS '-1x', MAX(CASE WHEN multiple = -2.0 THEN rebalance_1pct_usd END) AS '-2x', MAX(CASE WHEN multiple = -3.0 THEN rebalance_1pct_usd END) AS '-3x' FROM board_flows WHERE index_family='$family' AND ts BETWEEN $__from AND $__to GROUP BY ts ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, MAX(CASE WHEN multiple = 3.0 THEN rebalance_1pct_usd END) AS '+3x', MAX(CASE WHEN multiple = 2.0 THEN rebalance_1pct_usd END) AS '+2x', MAX(CASE WHEN multiple = -1.0 THEN rebalance_1pct_usd END) AS '-1x', MAX(CASE WHEN multiple = -2.0 THEN rebalance_1pct_usd END) AS '-2x', MAX(CASE WHEN multiple = -3.0 THEN rebalance_1pct_usd END) AS '-3x' FROM board_flows WHERE index_family='$family' AND ts BETWEEN $__from AND $__to GROUP BY ts ORDER BY ts",
           "timeColumns": [
             "time"
           ]
@@ -873,6 +873,21 @@
                 "value": {
                   "mode": "fixed",
                   "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "-1x"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "yellow"
                 }
               }
             ]

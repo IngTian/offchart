@@ -302,7 +302,7 @@ def _swap_in(con, table: str, frame: pd.DataFrame, key: tuple[str, ...]) -> None
 #: differ -- ProShares and SSGA forbid mirroring, VanEck restricts commercial use --
 #: and `license` is a per-source field the repo requires to be accurate. One board
 #: because they answer one question.
-FLOW_SOURCES = ("proshares_flows", "spy_flows", "smh_flows")
+FLOW_SOURCES = ("proshares_flows", "spy_flows", "gld_flows", "smh_flows")
 
 
 def _flow_rows(con) -> pd.DataFrame:
