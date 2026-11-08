@@ -8,7 +8,9 @@ lib/          db (the store), metrics, segments, schema, xlsx,
 sources/      one file per source, auto-discovered with pkgutil
 scripts/      ingest, build (derived tables), status, verify_spec
 grafana/      docker-compose.yml, provisioning/, dashboards/  — all committed
+tools/        screenshot.py — regenerates the README's images
 tests/        fixture.sqlite + the suite
+assets/       the README's screenshots
 data/         offchart.sqlite — gitignored, and nothing else lives here
 docs/         this
 ```
@@ -150,6 +152,34 @@ it prints a reminder rather than letting you discover that from a chart.
 
 **Nothing schedules `make pull`.** There is no cron and no CI job that fetches; the data
 is as fresh as the last time you ran it, which is what `make status` is for.
+
+### The README's screenshots
+
+```
+.venv/bin/python tools/screenshot.py          # rewrites assets/*.png
+```
+
+Needs `make grafana` up and a backfilled store. Drives headless Chrome rather than
+Grafana's image-renderer plugin, which is a 400 MB sidecar container for something
+Chrome already does; ffmpeg crops the dead background off (`sips` cannot — it ignores
+`--cropOffset` and always crops centred, which eats the panel title).
+
+**Only CFTC boards are photographed, and that is a licence decision rather than
+laziness.** A committed PNG of a board is a published rendering of that board's data,
+which puts it in the same category as committing the data — and this repo commits
+none. CFTC Commitments of Traders is US Government work in the public domain, so a
+picture of it is free to publish. ProShares forbids publishing "any of the contents",
+SSGA permits only "print-outs for your own personal use", and UMich prohibits
+redistribution without written consent — which is already why the test fixture's UMich
+slice is fabricated rather than sampled. So the flows and inflation boards are
+described in prose and not photographed, for the same reason FINRA's margin debt is
+absent rather than fetched.
+
+Unlike `make readme-table`, these are **not byte-reproducible**: the store is
+gitignored and grows weekly, so a fresh clone cannot regenerate them at all. The
+mitigation is that the time range and the market are pinned in the script rather than
+left relative, so only the newest few weeks of data move under the image. Treat the
+files as dated snapshots and re-run after anything that changes a panel.
 
 ### Which interpreter
 

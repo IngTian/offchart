@@ -61,6 +61,49 @@ def test_every_doc_opens_with_a_single_h1(path: Path) -> None:
     )
 
 
+#: An image embedded by absolute GitHub raw URL, which is how the README references
+#: assets/ so the images also render outside github.com.
+RAW_ASSET = re.compile(
+    r"https://raw\.githubusercontent\.com/IngTian/offchart/main/(assets/[^)\s]+)"
+)
+
+
+def test_every_embedded_screenshot_exists() -> None:
+    """The images are referenced by ABSOLUTE url, which the link test above skips.
+
+    That skip is right -- checking live http would need network -- but it leaves the
+    screenshots unguarded, and they are the one kind of link that breaks silently:
+    GitHub renders a broken-image icon rather than failing anything. A typo in a
+    filename, or deleting an asset without editing the README, would ship.
+    """
+    text = (ROOT / "README.md").read_text()
+    referenced = set(RAW_ASSET.findall(text))
+    assert referenced, "the README embeds no screenshots -- was a path form changed?"
+    missing = sorted(p for p in referenced if not (ROOT / p).exists())
+    assert not missing, f"README embeds assets that do not exist: {missing}"
+
+    # ...and the reverse, so a committed asset nobody shows gets noticed.
+    on_disk = {f"assets/{p.name}" for p in (ROOT / "assets").glob("*.png")}
+    orphans = sorted(on_disk - referenced)
+    assert not orphans, (
+        f"these assets are committed but shown nowhere: {orphans}. Reference them or "
+        "delete them -- an unused screenshot goes stale without anyone noticing."
+    )
+
+
+def test_every_embedded_screenshot_has_descriptive_alt_text() -> None:
+    """Alt text carries the figure for a reader who cannot see it, and it is also what
+    a reviewer reads in a diff. A filename or a bare word is not a description."""
+    text = (ROOT / "README.md").read_text()
+    for alt, target in re.findall(r"!\[([^\]]*)\]\(([^)]+)\)", text):
+        if "assets/" not in target:
+            continue
+        assert len(alt.split()) >= 8, (
+            f"alt text for {target.rsplit('/', 1)[-1]} is {alt!r} -- describe what the "
+            "image shows, not what it is called"
+        )
+
+
 def test_the_readme_stays_a_summary() -> None:
     """A soft ceiling, and the reason is the state this restructure undid.
 
