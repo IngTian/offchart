@@ -193,38 +193,53 @@ def upsert(con: sqlite3.Connection, source_id: str, frame: pd.DataFrame,
     on_key = ", ".join(f'"{k}"' for k in key)
     join_on = " AND ".join(f't."{k}" = s."{k}"' for k in key)
 
-    with con:
-        con.execute(f'CREATE TEMP TABLE _stage AS SELECT {quoted} FROM "{table}" WHERE 0')
-        con.executemany(f"INSERT INTO _stage ({quoted}) VALUES ({marks})", _rows(frame))
+    # The staging table is dropped in a FINALLY, because a TEMP table is not part
+    # of the main database's transaction and so survives the rollback that a failed
+    # write triggers. Measured: a write that raises leaves `temp._stage` behind and
+    # every subsequent upsert on the same connection then fails with
+    # "table _stage already exists" -- so one source's bad row used to take out
+    # every source after it in the same `make pull`, which is a far bigger blast
+    # radius than the row that caused it.
+    try:
+        with con:
+            con.execute(f'CREATE TEMP TABLE _stage AS SELECT {quoted} FROM "{table}" WHERE 0')
+            con.executemany(f"INSERT INTO _stage ({quoted}) VALUES ({marks})", _rows(frame))
 
-        new = con.execute(
-            f'SELECT count(*) FROM _stage s WHERE NOT EXISTS '
-            f'(SELECT 1 FROM "{table}" t WHERE {join_on})'
-        ).fetchone()[0]
-        revised = len(frame) - new
-        # IS NOT, never <>. A comparison against NULL yields NULL, which is not true,
-        # so <> would report "unchanged" for every row where either side is null --
-        # and 81k rows here have a null trader count. IS NOT compares nulls properly.
-        if data_cols:
-            differs = " OR ".join(f't."{c}" IS NOT s."{c}"' for c in data_cols)
-            value_changed = con.execute(
-                f'SELECT count(*) FROM _stage s JOIN "{table}" t ON {join_on} '
-                f"WHERE {differs}"
+            new = con.execute(
+                f'SELECT count(*) FROM _stage s WHERE NOT EXISTS '
+                f'(SELECT 1 FROM "{table}" t WHERE {join_on})'
             ).fetchone()[0]
-        else:
-            value_changed = 0
+            revised = len(frame) - new
+            # IS NOT, never <>. A comparison against NULL yields NULL, which is not true,
+            # so <> would report "unchanged" for every row where either side is null --
+            # and 81k rows here have a null trader count. IS NOT compares nulls properly.
+            if data_cols:
+                differs = " OR ".join(f't."{c}" IS NOT s."{c}"' for c in data_cols)
+                value_changed = con.execute(
+                    f'SELECT count(*) FROM _stage s JOIN "{table}" t ON {join_on} '
+                    f"WHERE {differs}"
+                ).fetchone()[0]
+            else:
+                value_changed = 0
 
-        if sets:
-            con.execute(
-                f'INSERT INTO "{table}" ({quoted}) SELECT {quoted} FROM _stage '
-                f"WHERE true ON CONFLICT ({on_key}) DO UPDATE SET {sets}"
-            )
-        else:
-            con.execute(
-                f'INSERT INTO "{table}" ({quoted}) SELECT {quoted} FROM _stage '
-                f"WHERE true ON CONFLICT ({on_key}) DO NOTHING"
-            )
-        con.execute("DROP TABLE _stage")
+            if sets:
+                con.execute(
+                    f'INSERT INTO "{table}" ({quoted}) SELECT {quoted} FROM _stage '
+                    f"WHERE true ON CONFLICT ({on_key}) DO UPDATE SET {sets}"
+                )
+            else:
+                con.execute(
+                    f'INSERT INTO "{table}" ({quoted}) SELECT {quoted} FROM _stage '
+                    f"WHERE true ON CONFLICT ({on_key}) DO NOTHING"
+                )
+    finally:
+        # Outside the `with`, so it runs whether the merge committed or rolled back.
+        # DROP opens no implicit transaction under the legacy isolation level
+        # (verified), so this cannot leave one open for the caller -- which matters,
+        # because scripts/build._swap_in issues an explicit BEGIN IMMEDIATE straight
+        # after calling this and would raise "cannot start a transaction within a
+        # transaction" if it did.
+        con.execute("DROP TABLE IF EXISTS temp._stage")
 
     return {
         "source": source_id,

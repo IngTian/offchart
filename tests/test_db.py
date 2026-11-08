@@ -180,6 +180,90 @@ def test_a_partial_frame_does_not_blank_the_columns_it_omits(con) -> None:
     assert b == 2.0, "the omitted column survives"
 
 
+def test_a_repeated_pull_adds_no_rows(con) -> None:
+    """The dedup promise stated as a ROW COUNT, which the report dict does not give.
+
+    `make pull` is run by hand, week after week, often over a window that overlaps
+    what is already stored, so this is the property the whole design rests on. It
+    holds because the key is a real `PRIMARY KEY ... WITHOUT ROWID` constraint
+    rather than application logic -- the engine refuses a duplicate, so this
+    cannot regress by someone editing a WHERE clause.
+    """
+    key = ("d",)
+    frame = pd.DataFrame({"d": ["2026-01-06", "2026-01-13"], "v": [1.0, 2.0]})
+    first = db.upsert(con, "t_twice", frame, key)
+    second = db.upsert(con, "t_twice", frame, key)
+
+    assert first["rows_total"] == 2
+    assert second["rows_total"] == 2, "a second identical pull added rows"
+    assert second["rows_new"] == 0
+    # ...and a third, overlapping rather than identical, still lands on 3 rows.
+    overlap = pd.DataFrame({"d": ["2026-01-13", "2026-01-20"], "v": [2.0, 3.0]})
+    third = db.upsert(con, "t_twice", overlap, key)
+    assert third["rows_total"] == 3
+    assert third["rows_new"] == 1
+
+
+def test_a_failed_write_leaves_no_staging_table_behind(con) -> None:
+    """One bad row must cost one source, not every source after it.
+
+    A TEMP table is not part of the main database's transaction, so it survives
+    the rollback a failed write triggers. Before this was fixed, `temp._stage`
+    outlived the failure and every subsequent upsert ON THE SAME CONNECTION died
+    with "table _stage already exists" -- and `make pull` ingests all thirteen
+    sources on one connection, so a single fractional value in one column took out
+    the twelve sources after it and the rebuild with it.
+
+    The failure is induced the way it actually happens rather than by mocking:
+    ddl_for types a column from the first frame's dtype, so an int64 column is
+    frozen as STRICT INTEGER and a later fractional value is refused by the engine.
+    """
+    key = ("d",)
+    db.upsert(con, "t_strict", pd.DataFrame({"d": ["2026-01-06"], "n": [1000]}), key)
+    assert "INTEGER" in con.execute(
+        "SELECT sql FROM sqlite_master WHERE name='t_strict'"
+    ).fetchone()[0]
+
+    with pytest.raises(sqlite3.IntegrityError, match="cannot store REAL value"):
+        db.upsert(con, "t_strict", pd.DataFrame({"d": ["2026-01-13"], "n": [2000.5]}), key)
+
+    leaked = con.execute(
+        "SELECT name FROM sqlite_temp_master WHERE type='table'"
+    ).fetchall()
+    assert leaked == [], f"the staging table outlived the failure: {leaked}"
+    assert con.in_transaction is False, (
+        "a transaction was left open, which would make the next BEGIN IMMEDIATE in "
+        "scripts/build._swap_in raise"
+    )
+
+    # The next source on the same connection is unaffected, which is the point.
+    after = db.upsert(con, "t_strict", pd.DataFrame({"d": ["2026-01-20"], "n": [3000]}), key)
+    assert after["rows_total"] == 2
+    # ...and the refused row is absent rather than half-written.
+    assert con.execute('SELECT count(*) FROM "t_strict" WHERE d = ?',
+                       ("2026-01-13",)).fetchone()[0] == 0
+
+
+def test_an_all_null_numeric_column_would_be_typed_text(con) -> None:
+    """The reason scripts/ingest coerces declared-numeric columns before writing.
+
+    An all-null column arrives as `object` dtype, so ddl_for types it TEXT and
+    CREATE TABLE IF NOT EXISTS freezes that for the life of the table. This is not
+    hypothetical -- it is why cftc_supp_cit's eight concentration columns are TEXT
+    in the live store while the identical eight in all six sibling tables are
+    REAL: CIT returns them all-null. A number later landing in a TEXT column sorts
+    LEXICALLY, so '9.1' outranks '85.0'.
+
+    Asserted on ddl_for rather than through ingest because this is the mechanism;
+    the fix lives at the ingest boundary, which has the source's TableSchema.
+    """
+    raw = pd.DataFrame({"d": ["2026-01-06"], "conc": [None]})
+    assert '"conc" TEXT' in db.ddl_for("t_allnull", raw, ("d",))
+
+    raw["conc"] = pd.to_numeric(raw["conc"], errors="coerce")
+    assert '"conc" REAL' in db.ddl_for("t_allnull", raw, ("d",))
+
+
 # ------------------------------------------------------- housekeeping
 
 def test_an_empty_frame_is_a_no_op(con) -> None:

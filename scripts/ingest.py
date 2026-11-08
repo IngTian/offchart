@@ -43,6 +43,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import pandas as pd  # noqa: E402
+
 from lib import db  # noqa: E402
 from lib.schema import Severity, worst  # noqa: E402
 from sources import IMPORT_ERRORS, all_sources, get  # noqa: E402
@@ -95,8 +97,60 @@ def run_one(con, source, *, backfill: bool = False) -> dict | None:
         print(f"  ! {source.id} is missing declared key columns: {missing}")
         return None
 
-    report = db.upsert(con, source.id, frame, source.key)
-    con.commit()
+    # A null in a key column is checked HERE and not by schema.check, because
+    # schema.check asks `.isna().all()` -- all-null only. One null market_code
+    # among 900,000 rows produces zero findings and then a NOT NULL constraint
+    # failure from the upsert, which is a far worse place to find out: see the
+    # write-failure comment below for what that used to cost.
+    for col in source.key:
+        n_null = int(frame[col].isna().sum())
+        if n_null:
+            print(f"  ! {source.id} has {n_null:,} null values in key column "
+                  f"{col!r} -- nothing written")
+            return None
+
+    # Declared-numeric columns are COERCED to a numeric dtype before the write,
+    # and this is a storage fix rather than a parsing one.
+    #
+    # lib.db.ddl_for types each column from the dtypes of the FIRST frame ever
+    # written and CREATE TABLE IF NOT EXISTS then freezes that choice for the life
+    # of the table. An all-null column arrives as `object`, so it is typed TEXT and
+    # stays TEXT even once the publisher starts sending numbers. That is not
+    # hypothetical: cftc_supp_cit's eight concentration columns are TEXT in the
+    # live store, while the identical eight in all six sibling tables are REAL,
+    # because CIT returns them all-null. A value landing in a TEXT column sorts
+    # LEXICALLY, which would break rule 1 through the storage layer rather than
+    # through any ranking code.
+    #
+    # pd.to_numeric is idempotent on a column that is already float, and leaves a
+    # genuine integer column as int64 -- umich_sca.year stays INTEGER, which is
+    # right for a year label.
+    #
+    # `errors="coerce"` is lossless HERE specifically because of the ordering:
+    # schema.check above runs the same coercion and raises FATAL if it turns any
+    # non-null value into NaN, so anything this loop could silently destroy has
+    # already stopped the write. Moving this above the check would make it a
+    # silent data-eater.
+    for col in source.schema.numeric:
+        if col in frame.columns:
+            frame[col] = pd.to_numeric(frame[col], errors="coerce")
+
+    # The WRITE is inside the try, not only the fetch.
+    #
+    # It used to sit outside, so any error db.upsert raised escaped run_one, then
+    # escaped the list comprehension in main(), and skipped db.finalize_for_serving
+    # -- handing Grafana a WAL-mode file. One source failing would take out the
+    # other twelve and the rebuild with it, because Makefile's `pull` is
+    # `ingest build`. A failed source is now one failed source.
+    try:
+        report = db.upsert(con, source.id, frame, source.key)
+        con.commit()
+    except Exception:
+        con.rollback()
+        print(f"  ! WRITE FAILED for {source.id} -- the table is unchanged")
+        traceback.print_exc()
+        return None
+
     print(
         f"  = {report['rows_total']:,} rows stored "
         f"({report['rows_new']:,} new, {report['rows_revised']:,} revisited, "
