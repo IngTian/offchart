@@ -48,6 +48,44 @@ def _short(text: str, width: int = 44) -> str:
     return head if len(head) <= width else head[: width - 1] + "…"
 
 
+def _type_drift(con) -> list[tuple[str, str, str]]:
+    """Declared-numeric columns whose STORED type is not numeric.
+
+    Reported because a stored type cannot be changed in place and nothing else
+    looks at it. lib.db.ddl_for types every column from the dtypes of the FIRST
+    frame written, and `CREATE TABLE IF NOT EXISTS` freezes that choice -- so a
+    column typed before the parser settled keeps the old type for the life of the
+    table, however the code changes.
+
+    Only NON-NUMERIC storage is reported, which today means TEXT: a number in a
+    TEXT column sorts LEXICALLY, so '9.1' outranks '85.0' and the causal-ranking
+    rule fails through the storage layer rather than through any ranking code.
+    That is the case where a wrong number reaches a board.
+
+    INTEGER is deliberately NOT reported, even though the live store has 70 such
+    columns where today's parser emits float. SQLite STRICT accepts a
+    whole-number REAL into an INTEGER column and refuses only a fractional one,
+    and every INTEGER column here is a contract count that CFTC publishes as a
+    whole number -- so listing them would be 70 lines of noise about a failure
+    that cannot currently occur. lib.db.ddl_for's docstring records it instead.
+
+    The remedy is to drop the table and `make backfill` that source;
+    scripts/ingest now coerces declared-numeric columns before the write, so a
+    rebuilt table gets REAL even when the column arrives all-null.
+    """
+    out = []
+    for src in sources.all_sources():
+        info = list(con.execute(f'PRAGMA table_info("{src.id}")'))
+        if not info:
+            continue
+        stored = {row[1]: row[2] for row in info}
+        for col in src.schema.numeric:
+            got = stored.get(col)
+            if got is not None and got not in ("REAL", "INTEGER"):
+                out.append((src.id, col, got))
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--db", default=None, help="path to the sqlite file")
@@ -96,6 +134,14 @@ def main() -> int:
             age = _age_days(when)
             print(f"  {table:<22} {rows:>11,}  {str(when):<12} "
                   f"{'' if age is None else str(age) + 'd':>6}  serving")
+
+        drift = _type_drift(con)
+        if drift:
+            print(f"\n  ! {len(drift)} declared-numeric column(s) are stored as text,")
+            print("    so any value in them would sort lexically. Drop the table and")
+            print("    `make backfill` that source to retype it:")
+            for source_id, col, got in drift:
+                print(f"      {source_id}.{col}  {got}")
     finally:
         con.close()
 
