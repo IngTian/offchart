@@ -73,14 +73,40 @@ UA = {"User-Agent": "offchart research (personal, low volume)"}
 #: which is what makes the pair-adds-demand arithmetic worth showing. Adding a fund
 #: is one line, but check its prospectus for the multiple first.
 FUNDS: dict[str, tuple[str, float]] = {
+    # Nasdaq-100. No unleveraged LONG fund is available anywhere with history --
+    # QQQ is Invesco, which serves only the latest day -- so PSQ at -1x is the
+    # closest thing to a 1x magnitude on this index.
     "TQQQ": ("NDX", 3.0),    # UltraPro QQQ
-    "SQQQ": ("NDX", -3.0),   # UltraPro Short QQQ
     "QLD": ("NDX", 2.0),     # Ultra QQQ
+    "PSQ": ("NDX", -1.0),    # Short QQQ
+    "QID": ("NDX", -2.0),    # UltraShort QQQ
+    "SQQQ": ("NDX", -3.0),   # UltraPro Short QQQ
+    # S&P 500. SPY (State Street) supplies the unleveraged side -- see
+    # sources/plain_etf_flows.
     "UPRO": ("SPX", 3.0),    # UltraPro S&P500
-    "SPXU": ("SPX", -3.0),   # UltraPro Short S&P500
     "SSO": ("SPX", 2.0),     # Ultra S&P500
     "SDS": ("SPX", -2.0),    # UltraShort S&P500
-    "USD": ("SOX", 2.0),     # Ultra Semiconductors -- the only semis exposure here
+    "SPXU": ("SPX", -3.0),   # UltraPro Short S&P500
+    # Semiconductors. SSG is the short leg: Direxion's SOXS is the better-known
+    # inverse semis fund and is unusable here because Direxion publishes no
+    # history, while SSG goes back to 2007. SMH (VanEck) is the unleveraged side.
+    "USD": ("SOX", 2.0),     # Ultra Semiconductors
+    "SSG": ("SOX", -2.0),    # UltraShort Semiconductors
+    # Bitcoin. BITO is the unleveraged leg and the oldest of the set; the whole
+    # family starts 2021 at the earliest, so this index has no pre-2021 history
+    # by construction rather than by omission.
+    "BITO": ("BTC", 1.0),    # Bitcoin ETF
+    "BITU": ("BTC", 2.0),    # Ultra Bitcoin ETF
+    "BITI": ("BTC", -1.0),   # Short Bitcoin ETF
+    "SBIT": ("BTC", -2.0),   # UltraShort Bitcoin ETF
+    # Gold. GLD (State Street) carries the unleveraged side and is two orders of
+    # magnitude larger than either leveraged fund here.
+    "UGL": ("GOLD", 2.0),    # Ultra Gold
+    "GLL": ("GOLD", -2.0),   # UltraShort Gold
+    # Crude oil. OILK is unleveraged and K-1 free; the 2x pair is the larger money.
+    "OILK": ("OIL", 1.0),    # K-1 Free Crude Oil ETF
+    "UCO": ("OIL", 2.0),     # Ultra Bloomberg Crude Oil
+    "SCO": ("OIL", -2.0),    # UltraShort Bloomberg Crude Oil
 }
 
 #: Columns as the publisher spells them, so a rename upstream fails on the KeyError
@@ -205,7 +231,17 @@ SOURCE_KWARGS = dict(
         "interchangeable, and summing them assumes the two indices move together.",
         "ProShares is one issuer. Direxion's leveraged semiconductor funds (SOXL, "
         "SOXS) are far larger in the chip complex and are NOT here, because Direxion "
-        "publishes only the latest day. USD is the only semis exposure on this board "
-        "and it is a 2x, not a 3x.",
+        "publishes only the latest day -- SSG covers the short side instead, at 2x "
+        "rather than 3x and at a fraction of SOXS's size.",
+        "The Nasdaq-100 has NO unleveraged long fund on this board. QQQ is Invesco, "
+        "which serves only the latest day, so NDX is the one index here with "
+        "leveraged funds and no ordinary-money denominator.",
+        "Bitcoin history starts 2021-10-15 (BITO) at the earliest and the 2x pair "
+        "starts 2024-04-01. Any chart of that index over a longer window is empty "
+        "before those dates by construction.",
+        "These are FUTURES-based funds for bitcoin, gold and oil -- they hold "
+        "derivatives, not the commodity, so their NAV tracks a rolling futures "
+        "position and diverges from spot over time. Flow is still flow, but the NAV "
+        "panel is not a spot price.",
     ),
 )

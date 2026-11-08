@@ -1,6 +1,6 @@
 {
   "uid": "offchart-flows",
-  "title": "Leveraged ETF flows",
+  "title": "ETF flows \u2014 leveraged and unleveraged",
   "tags": [
     "offchart",
     "flows"
@@ -55,7 +55,7 @@
         "includeAll": false,
         "allowCustomValue": false,
         "definition": "funds on the selected index, searchable by name",
-        "query": "SELECT DISTINCT ticker_label AS __text, ticker AS __value FROM board_flows WHERE index_family='$family' ORDER BY __text",
+        "query": "SELECT DISTINCT ticker_label AS __text, ticker AS __value FROM board_flows WHERE index_family='$family' ORDER BY multiple DESC, __text",
         "current": {
           "selected": false,
           "text": "TQQQ \u2014 ProShares UltraPro QQQ (+3x NDX)",
@@ -179,7 +179,7 @@
         "uid": "offchart"
       },
       "title": "Every fund, latest close",
-      "description": "Grouped by index family, bull funds first. Do NOT sum 'per 1% move' down the whole column: a dollar of NDX demand and a dollar of SPX demand are not interchangeable, and adding them assumes the two indices move together. Within one family the column DOES add, and adds across the bull/bear pair too -- both sides buy into a rally, because an inverse fund's short exposure grows as the index falls. Cumulative flow runs from each fund's inception.",
+      "description": "Each fund at ITS OWN latest close, not a shared one -- issuers publish on different lags (ProShares and VanEck carry the previous session, SSGA is a day behind), so a single global cut-off would silently drop whichever fund was last. The 'as of' column is what makes that visible rather than something you have to know. Grouped by index family, bull funds first. Unleveraged funds read exactly 0 in 'per 1% move' and that is the true answer, not a gap: (multiple^2 - multiple) is zero at 1x, so a plain ETF forces no mechanical trading at all. Do NOT sum 'per 1% move' down the whole column: a dollar of NDX demand and a dollar of SPX demand are not interchangeable, and adding them assumes the two indices move together. Within one family the column DOES add, and adds across the bull/bear pair too -- both sides buy into a rally, because an inverse fund's short exposure grows as the index falls. Cumulative flow runs from each fund's inception.",
       "gridPos": {
         "h": 9,
         "w": 17,
@@ -194,8 +194,8 @@
             "uid": "offchart"
           },
           "queryType": "table",
-          "rawQueryText": "SELECT ticker_label AS 'fund', index_family AS 'index', nav_change_pct AS 'NAV chg %', flow_usd AS 'flow today', flow_cum_usd AS 'cumulative flow', assets AS 'assets', rebalance_1pct_usd AS 'per 1% move' FROM board_flows WHERE ts = (SELECT MAX(ts) FROM board_flows) ORDER BY index_family, multiple DESC",
-          "queryText": "SELECT ticker_label AS 'fund', index_family AS 'index', nav_change_pct AS 'NAV chg %', flow_usd AS 'flow today', flow_cum_usd AS 'cumulative flow', assets AS 'assets', rebalance_1pct_usd AS 'per 1% move' FROM board_flows WHERE ts = (SELECT MAX(ts) FROM board_flows) ORDER BY index_family, multiple DESC",
+          "rawQueryText": "SELECT ticker_label AS 'fund', index_family AS 'index', leverage_kind AS 'kind', trade_date AS 'as of', nav_change_pct AS 'NAV chg %', flow_usd AS 'flow today', flow_cum_usd AS 'cumulative flow', assets AS 'assets', rebalance_1pct_usd AS 'per 1% move' FROM board_flows b WHERE ts = (SELECT MAX(ts) FROM board_flows x WHERE x.ticker = b.ticker) ORDER BY index_family, multiple DESC",
+          "queryText": "SELECT ticker_label AS 'fund', index_family AS 'index', leverage_kind AS 'kind', trade_date AS 'as of', nav_change_pct AS 'NAV chg %', flow_usd AS 'flow today', flow_cum_usd AS 'cumulative flow', assets AS 'assets', rebalance_1pct_usd AS 'per 1% move' FROM board_flows b WHERE ts = (SELECT MAX(ts) FROM board_flows x WHERE x.ticker = b.ticker) ORDER BY index_family, multiple DESC",
           "timeColumns": []
         }
       ],
@@ -344,6 +344,30 @@
               {
                 "id": "decimals",
                 "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "kind"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "as of"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
               }
             ]
           }
@@ -746,7 +770,7 @@
         "uid": "offchart"
       },
       "title": "Forced to trade per 1% move in $family \u2014 by leverage",
-      "description": "What a 1% move in this index obliges ProShares' funds to trade, split by multiple: (multiple^2 - multiple) x assets x 1%. STACKED, and here that is correct rather than the usual error -- these are disjoint funds on the same index, and their demand genuinely adds. Note -3x carries coefficient 12 against +3x's 6, so an inverse fund rebalances twice as hard per dollar of assets; and the bull and bear sides add rather than offset, because a bear fund's short exposure grows as the index falls, so it must buy too. One issuer only: Direxion is absent because it publishes no history, and it is the larger house in the chip complex.",
+      "description": "What a 1% move in this index obliges ProShares' funds to trade, split by multiple: (multiple^2 - multiple) x assets x 1%. STACKED, and here that is correct rather than the usual error -- these are disjoint funds on the same index, and their demand genuinely adds. Note -3x carries coefficient 12 against +3x's 6, so an inverse fund rebalances twice as hard per dollar of assets; and the bull and bear sides add rather than offset, because a bear fund's short exposure grows as the index falls, so it must buy too.\n\nThere is no +1x series because there is nothing to draw: an unleveraged fund's coefficient is exactly zero. A -1x fund is NOT zero -- its coefficient is 2, the same as a +2x -- which is why an inverse fund a fraction of the size of its unleveraged twin still shows up here.\n\nOne issuer only. Direxion is absent because it publishes no history, and it is the larger house in the chip complex; SSG covers the short semis leg instead, at 2x and a fraction of SOXS's size.",
       "gridPos": {
         "h": 8,
         "w": 24,
@@ -761,8 +785,8 @@
             "uid": "offchart"
           },
           "queryType": "time series",
-          "rawQueryText": "SELECT ts/1000 AS time, MAX(CASE WHEN multiple = 3.0 THEN rebalance_1pct_usd END) AS '+3x', MAX(CASE WHEN multiple = 2.0 THEN rebalance_1pct_usd END) AS '+2x', MAX(CASE WHEN multiple = -2.0 THEN rebalance_1pct_usd END) AS '-2x', MAX(CASE WHEN multiple = -3.0 THEN rebalance_1pct_usd END) AS '-3x' FROM board_flows WHERE index_family='$family' AND ts BETWEEN $__from AND $__to GROUP BY ts ORDER BY ts",
-          "queryText": "SELECT ts/1000 AS time, MAX(CASE WHEN multiple = 3.0 THEN rebalance_1pct_usd END) AS '+3x', MAX(CASE WHEN multiple = 2.0 THEN rebalance_1pct_usd END) AS '+2x', MAX(CASE WHEN multiple = -2.0 THEN rebalance_1pct_usd END) AS '-2x', MAX(CASE WHEN multiple = -3.0 THEN rebalance_1pct_usd END) AS '-3x' FROM board_flows WHERE index_family='$family' AND ts BETWEEN $__from AND $__to GROUP BY ts ORDER BY ts",
+          "rawQueryText": "SELECT ts/1000 AS time, MAX(CASE WHEN multiple = 3.0 THEN rebalance_1pct_usd END) AS '+3x', MAX(CASE WHEN multiple = 2.0 THEN rebalance_1pct_usd END) AS '+2x', MAX(CASE WHEN multiple = -1.0 THEN rebalance_1pct_usd END) AS '-1x', MAX(CASE WHEN multiple = -2.0 THEN rebalance_1pct_usd END) AS '-2x', MAX(CASE WHEN multiple = -3.0 THEN rebalance_1pct_usd END) AS '-3x' FROM board_flows WHERE index_family='$family' AND ts BETWEEN $__from AND $__to GROUP BY ts ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, MAX(CASE WHEN multiple = 3.0 THEN rebalance_1pct_usd END) AS '+3x', MAX(CASE WHEN multiple = 2.0 THEN rebalance_1pct_usd END) AS '+2x', MAX(CASE WHEN multiple = -1.0 THEN rebalance_1pct_usd END) AS '-1x', MAX(CASE WHEN multiple = -2.0 THEN rebalance_1pct_usd END) AS '-2x', MAX(CASE WHEN multiple = -3.0 THEN rebalance_1pct_usd END) AS '-3x' FROM board_flows WHERE index_family='$family' AND ts BETWEEN $__from AND $__to GROUP BY ts ORDER BY ts",
           "timeColumns": [
             "time"
           ]
@@ -849,6 +873,21 @@
                 "value": {
                   "mode": "fixed",
                   "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "-1x"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "yellow"
                 }
               }
             ]

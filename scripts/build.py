@@ -298,6 +298,13 @@ def _swap_in(con, table: str, frame: pd.DataFrame, key: tuple[str, ...]) -> None
         con.execute(f'ALTER TABLE "{staging}" RENAME TO "{table}"')
 
 
+#: Every source feeding board_flows. Separate sources because each issuer's terms
+#: differ -- ProShares and SSGA forbid mirroring, VanEck restricts commercial use --
+#: and `license` is a per-source field the repo requires to be accurate. One board
+#: because they answer one question.
+FLOW_SOURCES = ("proshares_flows", "spy_flows", "gld_flows", "smh_flows")
+
+
 def _flow_rows(con) -> pd.DataFrame:
     """One row per (fund, day) with flow, cumulative flow and rebalancing demand.
 
@@ -310,12 +317,19 @@ def _flow_rows(con) -> pd.DataFrame:
     in particular is an expanding window that no panel should be recomputing on
     every load.
     """
-    raw = db.read_frame(con, "proshares_flows")
-    if raw.empty:
-        print("  ! proshares_flows has no rows -- run `make pull` first")
+    frames = []
+    for table in FLOW_SOURCES:
+        one = db.read_frame(con, table)
+        if one.empty:
+            print(f"  ! {table} has no rows -- run `make pull` first")
+            continue
+        frames.append(one)
+    if not frames:
         return pd.DataFrame()
-
-    raw = raw.copy()
+    # Concat rather than one table per issuer: the funds share a grain (one fund-day),
+    # a flow identity and a board, and only their LICENCES differ -- which is why the
+    # sources stay separate upstream and meet here.
+    raw = pd.concat(frames, ignore_index=True)
     raw["trade_date"] = pd.to_datetime(raw["trade_date"])
     out = []
     for ticker, sub in raw.groupby("ticker", observed=True):
@@ -325,6 +339,13 @@ def _flow_rows(con) -> pd.DataFrame:
         sub = sub.sort_values("trade_date").reset_index(drop=True)
         multiple = float(sub["multiple"].iloc[-1])
         flow = metrics.etf_flow(sub["assets"], sub["nav"])
+        # Computed where the issuer does not publish it, which is both plain-ETF
+        # sources. Not taken from VanEck's own '% Change' column even though it
+        # exists: that column is TOTAL RETURN on SMH's annual December distribution
+        # and disagrees with the NAV-derived change by up to 2.22 points on 14 rows.
+        published = pd.to_numeric(sub.get("nav_change_pct"), errors="coerce")
+        derived = (sub["nav"] / sub["nav"].shift(1) - 1.0) * 100.0
+        nav_change = published.fillna(derived) if published is not None else derived
         out.append(pd.DataFrame({
             "ticker": ticker,
             "ticker_label": (
@@ -336,7 +357,8 @@ def _flow_rows(con) -> pd.DataFrame:
             "trade_date": sub["trade_date"].dt.strftime("%Y-%m-%d"),
             "ts": _epoch_ms(pd.DatetimeIndex(sub["trade_date"])).to_numpy(),
             "nav": sub["nav"].to_numpy(),
-            "nav_change_pct": sub["nav_change_pct"].to_numpy(),
+            "nav_change_pct": nav_change.to_numpy(),
+            "leverage_kind": "leveraged" if abs(multiple) != 1.0 else "unleveraged",
             "assets": sub["assets"].to_numpy(),
             "shares_outstanding": sub["shares_outstanding"].to_numpy(),
             "flow_usd": flow.to_numpy(),
