@@ -35,7 +35,7 @@ PY_VERSION ?= 3.12
 
 .DEFAULT_GOAL := help
 .PHONY: help venv which-python pull backfill build ingest verify test status \
-        grafana grafana-stop grafana-logs fixtures compact clean reset-db
+        readme-table grafana grafana-stop grafana-logs fixtures compact clean reset-db
 
 help:
 	@echo 'offchart -- CFTC and friends into SQLite, read by Grafana.'
@@ -136,6 +136,13 @@ test:
 
 status:
 	$(PYTHON) -m scripts.status
+
+# The README's inventory table, generated. Not in `make help`: it is a maintenance
+# chore, not something a reader runs. It exists because the hand-typed counts in that
+# table were wrong three times, and a count nobody can regenerate is wrong again the
+# week after it is typed.
+readme-table:
+	@$(PYTHON) -m scripts.status --markdown
 
 grafana:
 	$(COMPOSE) up -d
