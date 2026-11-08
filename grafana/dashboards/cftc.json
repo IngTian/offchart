@@ -1,8 +1,9 @@
 {
-  "uid": "offchart-positioning",
-  "title": "Positioning",
+  "uid": "offchart-cftc",
+  "title": "CFTC",
   "tags": [
-    "offchart"
+    "offchart",
+    "cftc"
   ],
   "timezone": "utc",
   "editable": false,
