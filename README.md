@@ -1,7 +1,7 @@
 # offchart
 
 [![tests](https://img.shields.io/github/actions/workflow/status/IngTian/offchart/tests.yml?branch=main&label=tests)](https://github.com/IngTian/offchart/actions/workflows/tests.yml)
-[![License](https://img.shields.io/github/license/IngTian/offchart)](LICENSE)
+[![License](https://img.shields.io/badge/code-MIT-blue)](LICENSE)
 [![data](https://img.shields.io/badge/data-none%20committed-blue)](docs/licensing.md)
 
 **The data TradingView doesn't carry, in a database Grafana can read.**

@@ -120,6 +120,46 @@ def test_the_readme_stays_a_summary() -> None:
     )
 
 
+def test_the_license_file_is_nothing_but_the_mit_text() -> None:
+    """LICENSE must stay machine-identifiable, and it must stay TRUE.
+
+    It used to carry 37 appended lines describing each source's data terms. Two
+    separate costs, and the second is the one that matters:
+
+    1. GitHub's licence detector refused the file, reporting
+       `license: other / NOASSERTION`, so the repo advertised no licence at all to
+       any tool that asks the API.
+    2. The appendix went STALE and contradicted the README. It documented
+       `openrouter_pricing` -- deleted in #11 -- and asserted "the committed CSVs
+       under data/snapshots/openrouter_pricing/ are the only data files in this
+       repository" while the README says no dataset is stored "now or in its
+       history". Nothing under data/ is tracked, so the claim was simply false, and
+       it named none of the five ETF flow sources added since.
+
+    Per-source terms belong on the `Source` declaration, where the dataclass and the
+    redistribution test enforce them; the summary belongs in docs/licensing.md. This
+    test is what stops them migrating back into a file nobody checks.
+    """
+    text = (ROOT / "LICENSE").read_text()
+    assert text.startswith("MIT License"), "LICENSE no longer opens as MIT"
+    assert "MERCHANTABILITY" in text, "the MIT warranty clause is missing"
+
+    n = len(text.splitlines())
+    assert n <= 25, (
+        f"LICENSE is {n} lines. The MIT text is 21; anything appended risks GitHub "
+        "classifying the repo as 'other'. Put it in docs/licensing.md instead."
+    )
+
+    # A source id in here is the exact shape of the drift that happened before.
+    import sources
+
+    named = sorted(s.id for s in sources.all_sources() if s.id in text)
+    assert not named, (
+        f"LICENSE names {named}. Source terms go on the Source declaration and are "
+        "summarised in docs/licensing.md -- a copy here goes stale unnoticed."
+    )
+
+
 def test_the_generated_table_says_it_is_generated() -> None:
     """The inventory table's counts have been wrong three times.
 
