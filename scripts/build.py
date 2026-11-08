@@ -343,17 +343,39 @@ def _leverage_rows(con) -> pd.DataFrame:
     raw["period_date"] = pd.to_datetime(raw["period_date"])
     raw = raw.sort_values("period_date").reset_index(drop=True)
 
-    receivables = pd.to_numeric(raw["broker_receivables"], errors="coerce")
-    equities = pd.to_numeric(raw.get("household_equities"), errors="coerce")
-    return pd.DataFrame({
+    def num(column):
+        return pd.to_numeric(raw.get(column), errors="coerce")
+
+    receivables = num("broker_receivables")
+    equities = num("household_equities")
+    households = num("household_margin")
+    hf_dom = num("hedge_fund_margin_domestic")
+    hf_for = num("hedge_fund_margin_foreign")
+    banks = num("household_margin_from_banks")
+
+    out = pd.DataFrame({
         "period_date": raw["period_date"].dt.strftime("%Y-%m-%d"),
         "ts": _epoch_ms(pd.DatetimeIndex(raw["period_date"])).to_numpy(),
         "broker_receivables": receivables.to_numpy(),
         "household_equities": equities.to_numpy(),
+        "household_margin": households.to_numpy(),
+        "hedge_fund_margin": (hf_dom.fillna(0) + hf_for.fillna(0)).to_numpy(),
+        "household_margin_from_banks": banks.to_numpy(),
         # metrics.share_of guards the vanishing denominator, which matters at the
         # 1945 end where both series are small.
         "pct_of_household_equities": metrics.share_of(receivables, equities).to_numpy(),
+        # The household-only share, which is the series that IS comparable across the
+        # whole history: the aggregate's population changed when hedge funds entered
+        # it, this one's did not.
+        "household_pct_of_equities": metrics.share_of(households, equities).to_numpy(),
+        # How much of the aggregate is no longer households. 0% through 2009, 69% at
+        # 2026:Q2 -- carried as a column so the composition break is on the board
+        # rather than in a docstring nobody opens.
+        "pct_aggregate_hedge_funds": metrics.share_of(
+            hf_dom.fillna(0) + hf_for.fillna(0), receivables
+        ).to_numpy(),
     })
+    return out
 
 
 def serving(con) -> None:

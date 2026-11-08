@@ -85,6 +85,28 @@ UA = {"User-Agent": "offchart research (personal, low volume)"}
 SERIES = {
     "Z1/Z1/FL663067003.Q": "broker_receivables",
     "Z1/Z1/FL153064105.Q": "household_equities",
+    # The DECOMPOSITION, and it is not optional colour. The aggregate above is the
+    # sum of these three to the dollar, and its composition changed completely:
+    #
+    #   $bn              2000-03  2007-06  2009-03  2021-12  2026-06
+    #   households           265      299      120      147      227
+    #   hedge funds dom        0        0        0       88      131
+    #   hedge funds for        0        0        0      283      384
+    #   = aggregate          265      299      120      518      742
+    #
+    # So before about 2010 the aggregate IS household margin debt, and today it is
+    # 69% hedge funds. Reading the long series as one thing compares households in
+    # 2000 against households-plus-hedge-funds now. The Fed added hedge funds as a
+    # sector in this release (2026:Q2, with private credit vehicles), which is also
+    # why the earlier quarters read zero rather than small.
+    "Z1/Z1/FL153167005.Q": "household_margin",
+    "Z1/Z1/FL623167003.Q": "hedge_fund_margin_domestic",
+    "Z1/Z1/FL623167063.Q": "hedge_fund_margin_foreign",
+    # A different INSTRUMENT -- bank loans, not broker accounts -- so it is outside
+    # the aggregate entirely. Carried because it is where household margin borrowing
+    # actually went: zero in 2000, $493bn now. Any read of "household leverage" that
+    # looks only at broker accounts misses it.
+    "Z1/Z1/FL153168015.Q": "household_margin_from_banks",
 }
 
 #: The member inside the zip. One file, long format.
@@ -163,11 +185,19 @@ SOURCE_KWARGS = dict(
     sort_key=("period_date",),
     schema=TableSchema(
         required=("period_date", "broker_receivables"),
-        numeric=("broker_receivables", "household_equities"),
-        # Household equities starts 1945:Q4 like the receivables series, but it is
-        # the denominator rather than the measure, so a release that dropped it
-        # should degrade the ratio panel and not fail the ingest.
-        optional=("household_equities",),
+        numeric=(
+            "broker_receivables", "household_equities", "household_margin",
+            "hedge_fund_margin_domestic", "hedge_fund_margin_foreign",
+            "household_margin_from_banks",
+        ),
+        # Only the aggregate is required. The denominator and the components are
+        # optional because a Z.1 release that reorganised a sector should degrade
+        # the decomposition panel rather than fail the whole ingest -- and this
+        # release reorganised two sectors, so that is not hypothetical.
+        optional=(
+            "household_equities", "household_margin", "hedge_fund_margin_domestic",
+            "hedge_fund_margin_foreign", "household_margin_from_banks",
+        ),
     ),
     cadence="Quarterly, released about ten weeks after quarter end (2026:Q2 on 2026-09-11)",
     incremental=False,
@@ -203,5 +233,13 @@ SOURCE_KWARGS = dict(
         "private credit vehicles and hedge funds, which can move older quarters.",
         "The level alone is not comparable across decades -- it grows 593x from 1945 "
         "mostly because the economy did. Read the share of household equity holdings.",
+        "THE AGGREGATE CHANGES COMPOSITION. It is households plus domestic and "
+        "foreign hedge funds, summing to the dollar, and the mix inverted: 100% "
+        "households through 2009, 69% hedge funds by 2026:Q2 ($515bn of $742bn). "
+        "Comparing today's reading to 2000's compares two different populations, so "
+        "read the decomposition rather than the total.",
+        "Household margin borrowing also moved OUTSIDE this series. Margin loans "
+        "from depository institutions are a different Z.1 instrument -- $0 in 2000, "
+        "$493bn at 2026:Q2 -- and are carried separately here rather than folded in.",
     ),
 )

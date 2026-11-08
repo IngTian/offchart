@@ -27,7 +27,7 @@
         "uid": "offchart"
       },
       "title": "Latest quarter",
-      "description": "Federal Reserve Z.1, series FL663067003: broker-dealer receivables due from customers (margin loans AND OTHER receivables). This is NOT FINRA's margin debt and must not be read as it -- at 2026:Q2 it is $742bn against FINRA's $1,502bn, about 49%, and the ratio drifts rather than being a scalar. The Fed's 'Security brokers and dealers' is a national-accounts sector, so lending booked in bank-affiliated entities sits elsewhere in Z.1. Quarterly and published about ten weeks after quarter end, so it describes a quarter already over: a regime measure, never a timing one.",
+      "description": "Federal Reserve Z.1. The HOUSEHOLD share leads because it is the only figure here comparable across the whole history -- the total's population changed, and the second tile says by how much. Not FINRA's margin debt: $742bn against FINRA's $1,502bn at the same quarter, a ratio that drifts rather than scales, because the Fed's 'Security brokers and dealers' is a national-accounts sector and the concept includes other receivables. Quarterly, published about ten weeks after quarter end, so it describes a quarter already over: a regime measure, never a timing one.",
       "gridPos": {
         "h": 6,
         "w": 24,
@@ -42,8 +42,8 @@
             "uid": "offchart"
           },
           "queryType": "table",
-          "rawQueryText": "SELECT broker_receivables AS 'Customer receivables', pct_of_household_equities AS 'Share of household equity holdings', household_equities AS 'Household equity holdings' FROM board_leverage ORDER BY ts DESC LIMIT 1",
-          "queryText": "SELECT broker_receivables AS 'Customer receivables', pct_of_household_equities AS 'Share of household equity holdings', household_equities AS 'Household equity holdings' FROM board_leverage ORDER BY ts DESC LIMIT 1",
+          "rawQueryText": "SELECT household_pct_of_equities AS 'Household margin, share of their equities', pct_aggregate_hedge_funds AS 'Hedge funds as share of the total', broker_receivables AS 'Total customer receivables', household_margin_from_banks AS 'Household margin owed to banks' FROM board_leverage ORDER BY ts DESC LIMIT 1",
+          "queryText": "SELECT household_pct_of_equities AS 'Household margin, share of their equities', pct_aggregate_hedge_funds AS 'Hedge funds as share of the total', broker_receivables AS 'Total customer receivables', household_margin_from_banks AS 'Household margin owed to banks' FROM board_leverage ORDER BY ts DESC LIMIT 1",
           "timeColumns": []
         }
       ],
@@ -74,23 +74,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Customer receivables"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "currencyUSD"
-              },
-              {
-                "id": "decimals",
-                "value": 1
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Share of household equity holdings"
+              "options": "Household margin, share of their equities"
             },
             "properties": [
               {
@@ -106,7 +90,39 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Household equity holdings"
+              "options": "Hedge funds as share of the total"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Total customer receivables"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Household margin owed to banks"
             },
             "properties": [
               {
@@ -129,8 +145,8 @@
         "type": "frser-sqlite-datasource",
         "uid": "offchart"
       },
-      "title": "Customer receivables as a share of household equity holdings",
-      "description": "THE PANEL TO READ, and the reason the denominator is part of this source. The level below is at an all-time high; this says the borrowing is a smaller share of the equities it is secured against than at any comparable peak -- 1.42% now against 3.05% at the 2000:Q1 top and 2.80% in 2007:Q2. A level that grows 593x since 1945 mostly records the economy getting bigger, which is why lib/metrics' third rule says a normaliser must be stated rather than assumed. Denominator is Z.1 FL153064105, households and nonprofit organizations' corporate equity holdings: a stock over a stock, not a stock over an annualised flow like GDP.",
+      "title": "Margin borrowing as a share of household equity holdings",
+      "description": "THE PANEL TO READ. The level below is at an all-time high and this is the measure that says what that means. Read the HOUSEHOLD line: same population throughout, and it falls from 3.05% at the 2000:Q1 top and 2.80% in 2007:Q2 to 0.44% now -- a sevenfold decline, because household broker margin is roughly flat in nominal dollars since 2000 ($265bn then, $227bn now) while the equities it is measured against multiplied. The all-customers line is the same ratio on the full aggregate; the two were IDENTICAL until hedge funds entered the sector, and the gap between them after 2010 is the composition change, not a change in behaviour. A level that grows 593x since 1945 mostly records the economy getting bigger, which is why lib/metrics' third rule says a normaliser must be stated. Denominator: Z.1 FL153064105, households and nonprofit organizations' corporate equity holdings -- a stock over a stock, not a stock over an annualised flow like GDP.",
       "gridPos": {
         "h": 10,
         "w": 24,
@@ -145,8 +161,8 @@
             "uid": "offchart"
           },
           "queryType": "time series",
-          "rawQueryText": "SELECT ts/1000 AS time, pct_of_household_equities AS 'share of equity holdings' FROM board_leverage WHERE ts BETWEEN $__from AND $__to ORDER BY ts",
-          "queryText": "SELECT ts/1000 AS time, pct_of_household_equities AS 'share of equity holdings' FROM board_leverage WHERE ts BETWEEN $__from AND $__to ORDER BY ts",
+          "rawQueryText": "SELECT ts/1000 AS time, household_pct_of_equities AS 'households (comparable throughout)', pct_of_household_equities AS 'all customers incl. hedge funds' FROM board_leverage WHERE ts BETWEEN $__from AND $__to ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, household_pct_of_equities AS 'households (comparable throughout)', pct_of_household_equities AS 'all customers incl. hedge funds' FROM board_leverage WHERE ts BETWEEN $__from AND $__to ORDER BY ts",
           "timeColumns": [
             "time"
           ]
@@ -174,101 +190,12 @@
           "decimals": 2,
           "min": 0,
           "color": {
-            "mode": "fixed",
-            "fixedColor": "semi-dark-orange"
+            "mode": "palette-classic-by-name"
           },
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "linear",
             "lineWidth": 2,
-            "fillOpacity": 12,
-            "gradientMode": "none",
-            "spanNulls": false,
-            "showPoints": "never",
-            "pointSize": 5,
-            "axisPlacement": "left",
-            "axisWidth": 80,
-            "axisLabel": "",
-            "axisColorMode": "text",
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            },
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "axisSoftMin": 0
-          }
-        },
-        "overrides": []
-      }
-    },
-    {
-      "id": 3,
-      "type": "timeseries",
-      "datasource": {
-        "type": "frser-sqlite-datasource",
-        "uid": "offchart"
-      },
-      "title": "Customer receivables, level",
-      "description": "The number that gets quoted, and the one that misleads across decades. Its own panel rather than an overlay on the share above: dollars and percent are different scales and a second y-axis is the one chart mistake this board will not make. Shared crosshair ties them -- hover either and both move.",
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 0,
-        "y": 16
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "frser-sqlite-datasource",
-            "uid": "offchart"
-          },
-          "queryType": "time series",
-          "rawQueryText": "SELECT ts/1000 AS time, broker_receivables AS 'customer receivables' FROM board_leverage WHERE ts BETWEEN $__from AND $__to ORDER BY ts",
-          "queryText": "SELECT ts/1000 AS time, broker_receivables AS 'customer receivables' FROM board_leverage WHERE ts BETWEEN $__from AND $__to ORDER BY ts",
-          "timeColumns": [
-            "time"
-          ]
-        }
-      ],
-      "options": {
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        },
-        "legend": {
-          "showLegend": false,
-          "displayMode": "hidden",
-          "placement": "bottom",
-          "calcs": [
-            "lastNotNull",
-            "min",
-            "max"
-          ]
-        }
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "currencyUSD",
-          "decimals": 1,
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "text"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
             "fillOpacity": 0,
             "gradientMode": "none",
             "spanNulls": false,
@@ -296,7 +223,174 @@
             "axisSoftMin": 0
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "households (comparable throughout)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "semi-dark-orange"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "all customers incl. hedge funds"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "text"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    8,
+                    6
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "offchart"
+      },
+      "title": "Who owes it: households vs hedge funds",
+      "description": "The composition break, drawn rather than described. STACKED, and correct here: these are disjoint borrowers whose sum is exactly the total, so the stack height IS the aggregate everyone quotes. Households alone through 2009; hedge funds (domestic plus foreign) are 69% of it by 2026:Q2. Dollars here and percent above are different scales, hence two panels and a shared crosshair rather than a second y-axis.",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "offchart"
+          },
+          "queryType": "time series",
+          "rawQueryText": "SELECT ts/1000 AS time, household_margin AS 'households', hedge_fund_margin AS 'hedge funds' FROM board_leverage WHERE ts BETWEEN $__from AND $__to ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, household_margin AS 'households', hedge_fund_margin AS 'hedge funds' FROM board_leverage WHERE ts BETWEEN $__from AND $__to ORDER BY ts",
+          "timeColumns": [
+            "time"
+          ]
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 1,
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 60,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "axisPlacement": "left",
+            "axisWidth": 80,
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "axisSoftMin": 0
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "households"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "semi-dark-orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "hedge funds"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "semi-dark-purple"
+                }
+              }
+            ]
+          }
+        ]
       }
     },
     {
@@ -306,8 +400,8 @@
         "type": "frser-sqlite-datasource",
         "uid": "offchart"
       },
-      "title": "The denominator: household equity holdings",
-      "description": "Shown rather than hidden, because a ratio whose denominator you cannot see is a number you cannot check. The share above falls when this line rises faster than the borrowing does -- which is most of what happened after 2009.",
+      "title": "Where household margin borrowing went: brokers vs banks",
+      "description": "Why households' broker margin looks flat: it did not shrink, it MOVED. Margin loans from depository institutions are a different Z.1 instrument -- outside the aggregate on the other panels entirely -- and they went from $0 in 2000 to $493bn at 2026:Q2, now more than double what the same households owe their brokers. Any read of household leverage that looks only at broker accounts misses the larger half.",
       "gridPos": {
         "h": 7,
         "w": 12,
@@ -322,8 +416,8 @@
             "uid": "offchart"
           },
           "queryType": "time series",
-          "rawQueryText": "SELECT ts/1000 AS time, household_equities AS 'household equity holdings' FROM board_leverage WHERE ts BETWEEN $__from AND $__to ORDER BY ts",
-          "queryText": "SELECT ts/1000 AS time, household_equities AS 'household equity holdings' FROM board_leverage WHERE ts BETWEEN $__from AND $__to ORDER BY ts",
+          "rawQueryText": "SELECT ts/1000 AS time, household_margin AS 'owed to brokers', household_margin_from_banks AS 'owed to banks' FROM board_leverage WHERE ts BETWEEN $__from AND $__to ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, household_margin AS 'owed to brokers', household_margin_from_banks AS 'owed to banks' FROM board_leverage WHERE ts BETWEEN $__from AND $__to ORDER BY ts",
           "timeColumns": [
             "time"
           ]
@@ -335,8 +429,8 @@
           "sort": "none"
         },
         "legend": {
-          "showLegend": false,
-          "displayMode": "hidden",
+          "showLegend": true,
+          "displayMode": "table",
           "placement": "bottom",
           "calcs": [
             "lastNotNull",
@@ -350,14 +444,13 @@
           "unit": "currencyUSD",
           "decimals": 1,
           "color": {
-            "mode": "fixed",
-            "fixedColor": "semi-dark-green"
+            "mode": "palette-classic-by-name"
           },
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "fillOpacity": 8,
+            "lineWidth": 2,
+            "fillOpacity": 0,
             "gradientMode": "none",
             "spanNulls": false,
             "showPoints": "never",
@@ -384,7 +477,38 @@
             "axisSoftMin": 0
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "owed to brokers"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "semi-dark-orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "owed to banks"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "semi-dark-blue"
+                }
+              }
+            ]
+          }
+        ]
       }
     }
   ],
