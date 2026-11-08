@@ -1,0 +1,893 @@
+{
+  "uid": "offchart-flows",
+  "title": "Leveraged ETF flows",
+  "tags": [
+    "offchart",
+    "flows"
+  ],
+  "timezone": "utc",
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "",
+  "graphTooltip": 2,
+  "time": {
+    "from": "now-3y",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "family",
+        "label": "Index",
+        "type": "query",
+        "datasource": {
+          "type": "frser-sqlite-datasource",
+          "uid": "offchart"
+        },
+        "refresh": 1,
+        "sort": 0,
+        "multi": false,
+        "includeAll": false,
+        "allowCustomValue": false,
+        "definition": "index families with leveraged funds on this board",
+        "query": "SELECT DISTINCT index_family FROM board_flows ORDER BY index_family",
+        "current": {
+          "selected": false,
+          "text": "NDX",
+          "value": "NDX"
+        },
+        "options": [],
+        "hide": 0,
+        "skipUrlSync": false
+      },
+      {
+        "name": "ticker",
+        "label": "Fund",
+        "type": "query",
+        "datasource": {
+          "type": "frser-sqlite-datasource",
+          "uid": "offchart"
+        },
+        "refresh": 1,
+        "sort": 0,
+        "multi": false,
+        "includeAll": false,
+        "allowCustomValue": false,
+        "definition": "funds on the selected index, searchable by name",
+        "query": "SELECT DISTINCT ticker_label AS __text, ticker AS __value FROM board_flows WHERE index_family='$family' ORDER BY __text",
+        "current": {
+          "selected": false,
+          "text": "TQQQ \u2014 ProShares UltraPro QQQ (+3x NDX)",
+          "value": "TQQQ"
+        },
+        "options": [],
+        "hide": 0,
+        "skipUrlSync": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "offchart"
+      },
+      "title": "Latest \u2014 ${ticker:text}",
+      "description": "The newest row for this fund, regardless of the time picker. Flow is money CREATED or REDEEMED, derived from assets rather than from the share count: the published share column is retroactively split-adjusted and rounds to thousands, which on the inverse funds puts 140 SQQQ rows at exactly 0.0 and fabricates up to 16x the real figure. 'Forced to trade' is (multiple^2 - multiple) x assets x 1%, the notional this fund MUST trade to hold its mandate after a 1% move in its index -- demand nobody chose, executed in swap and futures notional, and because assets are struck at the close it is what a move TOMORROW would force.",
+      "gridPos": {
+        "h": 9,
+        "w": 7,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "offchart"
+          },
+          "queryType": "table",
+          "rawQueryText": "SELECT nav_change_pct AS 'NAV change today', flow_usd AS 'Flow today', rebalance_1pct_usd AS 'Forced to trade per 1% move' FROM board_flows WHERE ticker='$ticker' ORDER BY ts DESC LIMIT 1",
+          "queryText": "SELECT nav_change_pct AS 'NAV change today', flow_usd AS 'Flow today', rebalance_1pct_usd AS 'Forced to trade per 1% move' FROM board_flows WHERE ticker='$ticker' ORDER BY ts DESC LIMIT 1",
+          "timeColumns": []
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "wideLayout": true,
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "text": {
+          "titleSize": 20,
+          "valueSize": 36
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "\u2014"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "NAV change today"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Flow today"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Forced to trade per 1% move"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "offchart"
+      },
+      "title": "Every fund, latest close",
+      "description": "Grouped by index family, bull funds first. Do NOT sum 'per 1% move' down the whole column: a dollar of NDX demand and a dollar of SPX demand are not interchangeable, and adding them assumes the two indices move together. Within one family the column DOES add, and adds across the bull/bear pair too -- both sides buy into a rally, because an inverse fund's short exposure grows as the index falls. Cumulative flow runs from each fund's inception.",
+      "gridPos": {
+        "h": 9,
+        "w": 17,
+        "x": 7,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "offchart"
+          },
+          "queryType": "table",
+          "rawQueryText": "SELECT ticker_label AS 'fund', index_family AS 'index', nav_change_pct AS 'NAV chg %', flow_usd AS 'flow today', flow_cum_usd AS 'cumulative flow', assets AS 'assets', rebalance_1pct_usd AS 'per 1% move' FROM board_flows WHERE ts = (SELECT MAX(ts) FROM board_flows) ORDER BY index_family, multiple DESC",
+          "queryText": "SELECT ticker_label AS 'fund', index_family AS 'index', nav_change_pct AS 'NAV chg %', flow_usd AS 'flow today', flow_cum_usd AS 'cumulative flow', assets AS 'assets', rebalance_1pct_usd AS 'per 1% move' FROM board_flows WHERE ts = (SELECT MAX(ts) FROM board_flows) ORDER BY index_family, multiple DESC",
+          "timeColumns": []
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "md",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "noValue": "\u2014"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "fund"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              },
+              {
+                "id": "custom.width",
+                "value": 300
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "NAV chg %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "flow today"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "semi-dark-red",
+                      "value": null
+                    },
+                    {
+                      "color": "semi-dark-blue",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cumulative flow"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "assets"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "per 1% move"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "offchart"
+      },
+      "title": "Money in and out, daily \u2014 ${ticker:text}",
+      "description": "Creation and redemption by authorised participants. Blue is money arriving, red money leaving -- the same two hues the CFTC board uses for net long and net short, so a colour means one thing across the repo. Bars rather than a line because each day is a separate event, not a level that persists. This is not a measure of who is right: a fund can take inflows all the way down, which is precisely the thing worth looking at.",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "offchart"
+          },
+          "queryType": "time series",
+          "rawQueryText": "SELECT ts/1000 AS time, flow_usd AS 'flow' FROM board_flows WHERE ticker='$ticker' AND ts BETWEEN $__from AND $__to ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, flow_usd AS 'flow' FROM board_flows WHERE ticker='$ticker' AND ts BETWEEN $__from AND $__to ORDER BY ts",
+          "timeColumns": [
+            "time"
+          ]
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "semi-dark-red",
+                "value": null
+              },
+              {
+                "color": "semi-dark-blue",
+                "value": 0
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 70,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "axisPlacement": "left",
+            "axisWidth": 80,
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "dashed"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "axisCenteredZero": true
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "offchart"
+      },
+      "title": "Cumulative flow since inception \u2014 ${ticker:text}",
+      "description": "The expanding sum of the panel above, computed in pandas rather than in SQL so no panel recomputes an accumulation on every load. Read it against the NAV panel below using the shared crosshair: hover either and both move. They are TWO panels and not one, because dollars of flow and dollars per share are different scales and a second y-axis is the one chart mistake this repo will not make.",
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "offchart"
+          },
+          "queryType": "time series",
+          "rawQueryText": "SELECT ts/1000 AS time, flow_cum_usd AS 'cumulative flow since inception' FROM board_flows WHERE ticker='$ticker' AND ts BETWEEN $__from AND $__to ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, flow_cum_usd AS 'cumulative flow since inception' FROM board_flows WHERE ticker='$ticker' AND ts BETWEEN $__from AND $__to ORDER BY ts",
+          "timeColumns": [
+            "time"
+          ]
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "semi-dark-purple"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "text",
+                "value": 0
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "axisPlacement": "left",
+            "axisWidth": 80,
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "dashed"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "axisCenteredZero": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cumulative flow since inception"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "semi-dark-purple"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "offchart"
+      },
+      "title": "NAV \u2014 ${ticker:text}",
+      "description": "Net asset value per share, split-adjusted retroactively by the publisher, so the whole history is on today's share basis. The price half of 'cumulative flow against price' -- its own panel, shared crosshair with the flow panels above.",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "offchart"
+          },
+          "queryType": "time series",
+          "rawQueryText": "SELECT ts/1000 AS time, nav AS 'NAV' FROM board_flows WHERE ticker='$ticker' AND ts BETWEEN $__from AND $__to ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, nav AS 'NAV' FROM board_flows WHERE ticker='$ticker' AND ts BETWEEN $__from AND $__to ORDER BY ts",
+          "timeColumns": [
+            "time"
+          ]
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "showLegend": false,
+          "displayMode": "hidden",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "axisPlacement": "left",
+            "axisWidth": 80,
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "offchart"
+      },
+      "title": "Assets under management \u2014 ${ticker:text}",
+      "description": "The size the rebalancing measure scales with, and the column flow is derived from. Assets move for two reasons -- money arriving and NAV moving -- which is exactly why flow divides the second one out rather than differencing this line.",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 24
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "offchart"
+          },
+          "queryType": "time series",
+          "rawQueryText": "SELECT ts/1000 AS time, assets AS 'assets' FROM board_flows WHERE ticker='$ticker' AND ts BETWEEN $__from AND $__to ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, assets AS 'assets' FROM board_flows WHERE ticker='$ticker' AND ts BETWEEN $__from AND $__to ORDER BY ts",
+          "timeColumns": [
+            "time"
+          ]
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "showLegend": false,
+          "displayMode": "hidden",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "semi-dark-green"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "axisPlacement": "left",
+            "axisWidth": 80,
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "axisSoftMin": 0
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "offchart"
+      },
+      "title": "Forced to trade per 1% move in $family \u2014 by leverage",
+      "description": "What a 1% move in this index obliges ProShares' funds to trade, split by multiple: (multiple^2 - multiple) x assets x 1%. STACKED, and here that is correct rather than the usual error -- these are disjoint funds on the same index, and their demand genuinely adds. Note -3x carries coefficient 12 against +3x's 6, so an inverse fund rebalances twice as hard per dollar of assets; and the bull and bear sides add rather than offset, because a bear fund's short exposure grows as the index falls, so it must buy too. One issuer only: Direxion is absent because it publishes no history, and it is the larger house in the chip complex.",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "offchart"
+          },
+          "queryType": "time series",
+          "rawQueryText": "SELECT ts/1000 AS time, MAX(CASE WHEN multiple = 3.0 THEN rebalance_1pct_usd END) AS '+3x', MAX(CASE WHEN multiple = 2.0 THEN rebalance_1pct_usd END) AS '+2x', MAX(CASE WHEN multiple = -2.0 THEN rebalance_1pct_usd END) AS '-2x', MAX(CASE WHEN multiple = -3.0 THEN rebalance_1pct_usd END) AS '-3x' FROM board_flows WHERE index_family='$family' AND ts BETWEEN $__from AND $__to GROUP BY ts ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, MAX(CASE WHEN multiple = 3.0 THEN rebalance_1pct_usd END) AS '+3x', MAX(CASE WHEN multiple = 2.0 THEN rebalance_1pct_usd END) AS '+2x', MAX(CASE WHEN multiple = -2.0 THEN rebalance_1pct_usd END) AS '-2x', MAX(CASE WHEN multiple = -3.0 THEN rebalance_1pct_usd END) AS '-3x' FROM board_flows WHERE index_family='$family' AND ts BETWEEN $__from AND $__to GROUP BY ts ORDER BY ts",
+          "timeColumns": [
+            "time"
+          ]
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "width": 200
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 55,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "axisPlacement": "left",
+            "axisWidth": 80,
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "axisSoftMin": 0
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "+3x"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "semi-dark-blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "+2x"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "-2x"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "-3x"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "semi-dark-red"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "annotations": {
+    "list": []
+  }
+}

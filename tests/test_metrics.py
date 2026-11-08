@@ -751,3 +751,88 @@ def test_empty_inputs_do_not_raise() -> None:
     assert len(S.describe_segments(empty_dates)) == 0
     assert len(M.expanding_percentile(empty_values)) == 0
     assert pd.isna(M.last_percentile(empty_values))
+
+
+# ----------------------------------------------- ETF creation/redemption flow
+
+def test_flow_from_assets_is_immune_to_a_rounded_share_count() -> None:
+    """Why flow is derived from ASSETS and not from the share count.
+
+    The obvious formula is `diff(shares) * nav`, and it is wrong for a fund that has
+    reverse-split often enough that its retroactively adjusted early share counts fall
+    below the published column's resolution. Measured on the real ProShares file: SQQQ
+    carries 140 rows whose share count rounds to exactly 0.0 thousands, 183 days where
+    `diff(shares) * nav` computes $0 while over $1M genuinely moved, and a worst case
+    16x wrong. TQQQ and UPRO, which only forward-split, show 0 such days.
+
+    This fixture is that failure in miniature: a share count rounded to one decimal of
+    thousands, where the true creation is visible in assets and invisible in shares.
+    """
+    nav = pd.Series([10.0, 10.0])
+    # Rounded to the published resolution: both days read "0.0" thousands.
+    shares = pd.Series([0.0, 0.0])
+    # Assets say 40,000 dollars arrived.
+    assets = pd.Series([10_000.0, 50_000.0])
+
+    by_assets = M.etf_flow(assets, nav)
+    by_shares = shares.diff() * 1000.0 * nav
+
+    assert by_shares.iloc[1] == 0.0, "fixture no longer reproduces the rounding blindness"
+    assert by_assets.iloc[1] == pytest.approx(40_000.0), (
+        "flow must come from assets, which carry the creation the share column rounded away"
+    )
+
+
+def test_flow_separates_creation_from_market_move() -> None:
+    """A pure NAV move with no creation is ZERO flow, not the change in assets.
+
+    This is the whole reason the formula carries a NAV ratio: assets rise when the
+    market rises, and calling that an inflow would make every rally look like buying.
+    """
+    nav = pd.Series([10.0, 12.0])
+    assets = pd.Series([1_000.0, 1_200.0])  # +20% assets, entirely the +20% NAV
+    out = M.etf_flow(assets, nav)
+    assert pd.isna(out.iloc[0]), "the first observation has no prior day to difference"
+    assert out.iloc[1] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_flow_is_signed_and_survives_a_drawdown() -> None:
+    """The washout case: NAV collapses while money comes in."""
+    nav = pd.Series([62.1887, 50.3126])
+    assets = pd.Series([33_540_000_000.0, 27_970_000_000.0])
+    out = M.etf_flow(assets, nav)
+    # assets fell, but by less than the -19.1% NAV move, so the residual is an INFLOW
+    assert out.iloc[1] > 0
+    assert out.iloc[1] == pytest.approx(824_000_000.0, rel=0.05)
+
+
+def test_rebalance_demand_is_exact_in_the_move_not_linearised() -> None:
+    """(m^2 - m) * assets * move, derived rather than asserted.
+
+    A leveraged fund holds m*A of exposure. After an index move r its target is
+    m*A*(1+m*r) while its held exposure is worth m*A*(1+r); the difference it must
+    trade is (m^2 - m)*A*r. Exact in r, not a first-order approximation.
+    """
+    assets = pd.Series([1_000.0])
+    # +3x: coefficient 6. A 1% move forces 6% of assets.
+    assert M.rebalance_demand(assets, 3.0, 0.01).iloc[0] == pytest.approx(60.0)
+    # -3x: coefficient 12, NOT 6. An inverse fund rebalances harder than its bull twin.
+    assert M.rebalance_demand(assets, -3.0, 0.01).iloc[0] == pytest.approx(120.0)
+    # +2x: coefficient 2
+    assert M.rebalance_demand(assets, 2.0, 0.01).iloc[0] == pytest.approx(20.0)
+    # unlevered: no mechanical trading at all
+    assert M.rebalance_demand(assets, 1.0, 0.01).iloc[0] == pytest.approx(0.0)
+
+
+def test_a_bull_bear_pair_adds_rebalancing_demand_rather_than_offsetting() -> None:
+    """The counterintuitive one, and the reason the panel must not net the pair.
+
+    Both funds buy into a rally and sell into a decline, because the bear fund's short
+    exposure grows as the index falls. Netting TQQQ against SQQQ would report roughly
+    half the real mechanical demand.
+    """
+    assets = pd.Series([1_000.0])
+    bull = M.rebalance_demand(assets, 3.0, 0.01).iloc[0]
+    bear = M.rebalance_demand(assets, -3.0, 0.01).iloc[0]
+    assert bull > 0 and bear > 0, "both sides trade in the same direction"
+    assert bull + bear == pytest.approx(180.0)

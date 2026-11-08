@@ -46,7 +46,13 @@ NON_CAUSAL_SQL = re.compile(
 #: Tables a panel may read. The serving tables are built by scripts/build with the
 #: ranks already computed; the archive tables are long-format and reading them from a
 #: panel invites recomputing a statistic in SQL.
-SERVING_TABLES = {"board_positioning", "board_inflation"}
+#:
+#: board_flows joined for the same reason as the other two and on the same terms: its
+#: derived columns (flow_usd, the expanding flow_cum_usd, rebalance_1pct_usd) are
+#: computed in pandas by scripts/build._flow_rows, so a panel reads them rather than
+#: differencing or accumulating in SQL. Adding a name here is a deliberate act -- the
+#: set is the whole enforcement of "panels read serving tables only".
+SERVING_TABLES = {"board_positioning", "board_inflation", "board_flows"}
 
 
 def _load(path: Path) -> dict:
