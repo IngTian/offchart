@@ -46,7 +46,13 @@ NON_CAUSAL_SQL = re.compile(
 #: Tables a panel may read. The serving tables are built by scripts/build with the
 #: ranks already computed; the archive tables are long-format and reading them from a
 #: panel invites recomputing a statistic in SQL.
-SERVING_TABLES = {"board_positioning", "board_inflation"}
+#:
+#: board_flows joined for the same reason as the other two and on the same terms: its
+#: derived columns (flow_usd, the expanding flow_cum_usd, rebalance_1pct_usd) are
+#: computed in pandas by scripts/build._flow_rows, so a panel reads them rather than
+#: differencing or accumulating in SQL. Adding a name here is a deliberate act -- the
+#: set is the whole enforcement of "panels read serving tables only".
+SERVING_TABLES = {"board_positioning", "board_inflation", "board_flows"}
 
 
 def _load(path: Path) -> dict:
@@ -161,10 +167,20 @@ def test_gaps_are_drawn_as_gaps(path: Path) -> None:
 def test_a_share_of_open_interest_is_shown_beside_open_interest(path: Path) -> None:
     """Rule 4, and it is easier to express here than against a plotly figure: a share
     can move because the cohort traded or because open interest did, and the share
-    alone cannot say which."""
-    panels = _panels(_load(path))
-    titles = " ".join((p.get("title") or "").lower() for p in panels)
-    queries = " ".join(_queries(_load(path))).lower()
+    alone cannot say which.
+
+    The trigger is reading board_positioning's `share` column, NOT the word "share"
+    anywhere in a query. It used to be the latter, which fired on the leverage board's
+    "share of household equity holdings" -- a ratio with nothing to do with open
+    interest, on a board that has no open interest to chart -- and demanded a column
+    that could not exist there. A guard that fires on an unrelated board teaches
+    people to widen it, and the way it gets widened is by deleting it.
+    """
+    dash = _load(path)
+    queries = " ".join(_queries(dash)).lower()
+    if "board_positioning" not in queries:
+        return
+    titles = " ".join((p.get("title") or "").lower() for p in _panels(dash))
     shows_share = "share" in queries or "% of open interest" in titles
     if not shows_share:
         return

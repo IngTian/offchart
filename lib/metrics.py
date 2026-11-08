@@ -540,3 +540,87 @@ def clamp_percentage(values: pd.Series, *, lo: float = 0.0, hi: float = 100.0) -
     """
     v = pd.to_numeric(values, errors="coerce")
     return v.where((v >= lo) & (v <= hi))
+
+
+# --------------------------------------------------------------------------- #
+# ETF creation/redemption flow and mechanical rebalancing
+# --------------------------------------------------------------------------- #
+def etf_flow(assets: pd.Series, nav: pd.Series) -> pd.Series:
+    """Money created or redeemed, in dollars. Signed: positive is an inflow.
+
+    DERIVED FROM ASSETS, NOT FROM THE SHARE COUNT, and that is the whole point of
+    this function existing rather than being one line at the call site.
+
+    The obvious formula is `diff(shares) * nav`. It is wrong for any fund that has
+    reverse-split enough that its retroactively adjusted early share counts fall
+    below the resolution of the published column, and it is wrong in the direction
+    the chart plots. Measured on ProShares' own file: SQQQ carries 140 rows whose
+    `Shares Outstanding (000)` rounds to exactly 0.0, 183 days where the share
+    method computes a $0 flow while over $1M genuinely moved, and a worst case of
+    16x (2010-08-30: +$103.9M by shares against +$6.5M by assets). On 21% of SQQQ
+    rows `shares * nav * 1000` does not reconcile to the published AUM at all. TQQQ
+    and UPRO, which only ever forward-split, show 0 such days -- so the bug hides on
+    exactly the inverse funds a washout chart is about, and it worsens on the
+    issuer's schedule: SQQQ reverse-split as recently as 2025-11-20.
+
+    The assets column is unrounded, so the same identity taken from it is exact:
+
+        flow_t = assets_t - assets_{t-1} * (nav_t / nav_{t-1})
+
+    The NAV ratio is what separates creation from market move. Without it every
+    rally reads as buying: assets rise 20% when NAV rises 20% and nothing was
+    created. Reproduces TQQQ to the dollar on the 2026-11-05 washout -- NAV -19.10%
+    and +$837.7M of inflow, which is the kind of day the measure exists for.
+
+    First observation is NaN: there is no prior day to difference against, and a
+    fund's inception-day assets are a creation of the whole fund rather than a flow.
+    """
+    a = pd.to_numeric(assets, errors="coerce")
+    n = pd.to_numeric(nav, errors="coerce")
+    grown = a.shift(1) * (n / n.shift(1))
+    return a - grown
+
+
+#: Multiples a leveraged ETF can carry here. Not in the published file -- it lives
+#: only inside the marketing name ("UltraPro" is 3x, "Ultra" is 2x), so it is a hand
+#: map in sources/leveraged_etf_flows.py and this set is the guard against a typo.
+KNOWN_MULTIPLES = frozenset({-3.0, -2.0, -1.0, 1.0, 2.0, 3.0})
+
+
+def rebalance_demand(assets: pd.Series, multiple: float, move: float = 0.01) -> pd.Series:
+    """Notional a fund must mechanically trade for a `move` in its index. Non-negative.
+
+    Derived, not folklore. A fund holding assets A at multiple m carries m*A of
+    exposure. After an index move r, its mandate requires m*A*(1+m*r) while the
+    exposure it holds is worth m*A*(1+r). The difference it has to trade is
+
+        m*A*(1+m*r) - m*A*(1+r) = (m^2 - m) * A * r
+
+    which is EXACT in r, not a linearisation. See Cheng & Madhavan (2009), "The
+    Dynamics of Leveraged and Inverse Exchange-Traded Funds" -- it appears in no SEC
+    filing, so the citation is the provenance.
+
+    Two consequences worth stating because both are counterintuitive:
+
+    - The coefficient is 6 for +3x and 12 for -3x. An inverse fund rebalances twice
+      as hard as its bull twin, because (m^2 - m) is 12 at m=-3.
+    - A bull/bear pair's demand ADDS rather than offsetting. Both buy into a rally:
+      the bear fund's short exposure grows as the index falls, so it must buy to
+      shrink it. Netting TQQQ against SQQQ reports about half the real demand.
+
+    Unlevered is 0 by construction (m=1 gives m^2-m=0), which is the sanity check.
+
+    This is mandate-implied DEMAND, never an observed trade. It is executed in swap
+    and futures notional, and `assets` is an end-of-day figure, so row D's number is
+    what a move on D+1 would force. Returned rather than stored per-row for a
+    hypothetical move so the caller states the move it is asking about.
+    """
+    if float(multiple) not in KNOWN_MULTIPLES:
+        raise ValueError(
+            f"multiple {multiple!r} is not one this repo maps; add it to "
+            "KNOWN_MULTIPLES once you have checked the fund's prospectus, because a "
+            "wrong multiple scales this measure by its square"
+        )
+    a = pd.to_numeric(assets, errors="coerce")
+    m = float(multiple)
+    return (m * m - m) * a * abs(float(move))

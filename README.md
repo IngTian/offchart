@@ -8,9 +8,48 @@ plumbing: a place they all land with the same shape, the same cadence handling, 
 same statistics applied honestly. That's all this repo is.
 
 It owns **data and preprocessing**. It owns no charting code. Rendering is Grafana,
-provisioned from two committed JSON files — because a hand-maintained chart layer turned
+provisioned from committed JSON files — because a hand-maintained chart layer turned
 out to cost more than the data ever did, and Grafana already does crosshairs, zoom,
 fullscreen and export better than a bespoke one will.
+
+## This repository contains no data
+
+It is a fetcher and a Grafana wiring, nothing else. **No dataset from any source here is
+stored in this repository, now or in its history.** You run `make pull` and the data
+lands in `data/offchart.sqlite` on your own machine, which is gitignored and never
+committed — not as a convention but as something the test suite asserts, by asking git
+directly, over every path a `--db` run could write to.
+
+It is published for **study and education**. The code is MIT; the data is not ours to
+license and we do not relicense, host, mirror or redistribute any of it. Each source
+carries the upstream's own terms and required attribution in its `license` and
+`citation` fields, and a source whose terms forbid mirroring is marked
+`redistributable=False`, which the suite enforces.
+
+What that framing does and does not settle, stated plainly because it would be easy to
+over-claim: it settles **redistribution** and **non-commercial use** completely. It does
+*not* settle an upstream term that restricts *creating* a local database or using the
+data for a particular purpose, because those bind whoever runs `make pull` rather than
+this repository. Where a source's terms work that way, the honest answer is to find a
+different source for the same series, or to go without it. A source is not added here
+because its data would be useful.
+
+**The worked example is margin debt.** Everyone means FINRA's monthly series, back to
+1997. It isn't here. FINRA grants use — content "shall be used ONLY for your own
+non-commercial personal or professional use" — but separately prohibits the mechanism a
+fetcher needs: **(d)** "develop or create a database of data using the FINRA Website",
+**(e)** "any data mining, scraping or harvesting tools (including robots)", **(m)** use
+of any portion of the site "in the development of any software program", and **(o)** any
+purpose without written permission. None of those are redistribution clauses, so
+"nothing is stored here" does not answer them. Reading their page yourself is squarely
+inside the grant; publishing a tool that automates (d), (e) and (m) is not.
+
+So margin debt and short interest are both **absent**, and the Federal Reserve's Z.1
+Financial Accounts were tried as a substitute and rejected: its broker-dealer customer
+receivables series carries undocumented reclassifications — $146bn moved from
+"households" to "hedge funds" in 2012:Q4 with the total unchanged, and the
+household-bank-loan line jumps sixfold in 2024:Q4 — so a long chart of it reads as
+behaviour when it is accounting. Not every gap has a substitute.
 
 ```
 make venv        # once: .venv with the two dependencies, built by uv
@@ -27,16 +66,20 @@ with no error anywhere, so the target that can't be half-run is the point.
 
 ## What's in it
 
-4.6 million rows across ten sources, all fetched keyless from public endpoints.
+4.7 million rows across ten sources, all fetched keyless from public endpoints.
 
 | source | what it is | rows | markets | from |
 |---|---|---:|---:|---|
-| `cftc_tff_fut` / `_futopt` | CFTC financial futures — dealer, asset mgr, leveraged, other, non-rept | 232,755 / 233,015 | 147 | 2006-06-13 |
-| `cftc_disagg_fut` / `_futopt` | CFTC commodities — producer, swap, managed money, other, non-rept | 923,955 / 954,390 | 655 / 685 | 2006-06-13 |
-| `cftc_legacy_fut` / `_futopt` | CFTC everything — commercial, non-commercial, non-rept | 866,709 / 834,129 | 955 / 944 | **1986-01-15** |
-| `cftc_supp_cit` | CFTC supplemental — **index traders (CIT)** in 13 ag markets | 54,648 | 13 | 2006-01-03 |
-| `prices` | daily closes for the reported markets | 538,147 | 87 symbols | 1990-01-01 |
-| `umich_sca` | UMich Surveys of Consumers — sentiment and inflation expectations | 681 | — | 1951-02-01 |
+| `cftc_tff_fut` / `_futopt` | CFTC financial futures — dealer, asset mgr, leveraged, other, non-rept | 236,610 / 236,880 | 149 / 150 | 2006-06-13 |
+| `cftc_disagg_fut` / `_futopt` | CFTC commodities — producer, swap, managed money, other, non-rept | 935,130 / 965,925 | 662 / 692 | 2006-06-13 |
+| `cftc_legacy_fut` / `_futopt` | CFTC everything — commercial, non-commercial, non-rept | 875,727 / 843,369 | 964 / 954 | **1986-01-15** |
+| `cftc_supp_cit` | CFTC supplemental — **index traders (CIT)** in 13 ag markets | 55,064 | 13 | 2006-01-03 |
+| `prices` | daily closes for the reported markets | 541,633 | 87 symbols | 1990-01-01 |
+| `umich_sca` | UMich Surveys of Consumers — sentiment and inflation expectations | 683 | — | 1951-02-01 |
+| `proshares_flows` | ProShares leveraged ETF flows — NAV, assets, creation/redemption | 37,522 | 8 funds | 2006-06-19 |
+
+Counts measured 2026-11-07. They grow every week, so treat them as an order of
+magnitude and re-measure with `make status` rather than trusting this table.
 
 Not a curated handful of markets — the whole CFTC cross-section, because the base-rate
 question needs breadth and it turns out to be affordable.
@@ -257,23 +300,32 @@ it, or `CUME_DIST`, or `NTILE`, or reads an archive table.
 
 ## Licensing, and what is committed
 
-Eight of the nine sources are US federal work or openly published APIs. One is not, and
+Eight of the ten sources are US federal work or openly published APIs. Two are not, and
 the distinction is enforced by tests rather than by a comment.
 
-**Nothing in `data/` is committed.** Two independent reasons for the database: it contains
-`umich_sca`, and it doesn't need to be. The University of Michigan grants permission-free
-*use* of its public Surveys of Consumers tables and separately prohibits *redistribution*
-without written consent (`faq.php` vs `agreement.php` — both quoted in `sources/umich.py`).
-Charting is fine; mirroring is not. And every source serves its own history back, so
-losing the file costs one `make backfill`. Even the test fixture's UMich slice is
-**fabricated**, not sampled, for exactly this reason.
+**Nothing in `data/` is committed.** Two independent reasons for the database: it holds
+sources we may not mirror, and it doesn't need committing anyway.
+
+`umich_sca` — the University of Michigan grants permission-free *use* of its public
+Surveys of Consumers tables and separately prohibits *redistribution* without written
+consent (`faq.php` vs `agreement.php`, both quoted in `sources/umich.py`). Charting is
+fine; mirroring is not. Even the test fixture's UMich slice is **fabricated**, not
+sampled, for exactly this reason.
+
+`proshares_flows` — the same shape. ProShares grants use and forbids mirroring ("No
+permission is granted to … 'mirror' on any server"), and restricts its site to
+"information, education and non-commercial purposes only" (quoted in
+`sources/leveraged_etf_flows.py`).
+
+And every source serves its own history back, so losing the file costs one
+`make backfill`.
 
 `tests/test_sources.py` asserts this by asking git directly rather than trusting
 `.gitignore` to say what it means: the store is unignorable at *every* path a `--db` run
 can write to, nothing under `data/` is tracked at all, and no committed file is named for
 a source we may not redistribute.
 
-This used to be two rules pulling opposite ways. A tenth source, `openrouter_pricing`,
+This used to be two rules pulling opposite ways. A since-deleted source, `openrouter_pricing`,
 served only "today" with no archive, so it *had* to be committed to exist — one CSV per
 date, written before the database was touched, with a test asserting no gaps. It has been
 deleted, and the honest reason is worth recording: it rendered on no panel, and

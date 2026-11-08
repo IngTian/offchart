@@ -272,6 +272,58 @@ def _swap_in(con, table: str, frame: pd.DataFrame, key: tuple[str, ...]) -> None
         con.execute(f'ALTER TABLE "{staging}" RENAME TO "{table}"')
 
 
+def _flow_rows(con) -> pd.DataFrame:
+    """One row per (fund, day) with flow, cumulative flow and rebalancing demand.
+
+    Per TICKER rather than per index family, and nothing is summed across families:
+    a dollar of NDX rebalancing demand and a dollar of SPX demand are not
+    interchangeable, and adding them would assert the two indices move together.
+
+    Everything derived is computed here in pandas for the same reason the
+    percentiles are -- a panel may only read a serving table, and the cumulative sum
+    in particular is an expanding window that no panel should be recomputing on
+    every load.
+    """
+    raw = db.read_frame(con, "proshares_flows")
+    if raw.empty:
+        print("  ! proshares_flows has no rows -- run `make pull` first")
+        return pd.DataFrame()
+
+    raw = raw.copy()
+    raw["trade_date"] = pd.to_datetime(raw["trade_date"])
+    out = []
+    for ticker, sub in raw.groupby("ticker", observed=True):
+        # Sorted before anything differences or accumulates. etf_flow and cumsum are
+        # both position-based, so an unsorted frame would silently difference the
+        # wrong pair of days -- the same hazard lib/segments documents for ranks.
+        sub = sub.sort_values("trade_date").reset_index(drop=True)
+        multiple = float(sub["multiple"].iloc[-1])
+        flow = metrics.etf_flow(sub["assets"], sub["nav"])
+        out.append(pd.DataFrame({
+            "ticker": ticker,
+            "ticker_label": (
+                f"{ticker} — {sub['fund_name'].iloc[-1]} "
+                f"({multiple:+g}x {sub['index_family'].iloc[-1]})"
+            ),
+            "index_family": sub["index_family"].iloc[-1],
+            "multiple": multiple,
+            "trade_date": sub["trade_date"].dt.strftime("%Y-%m-%d"),
+            "ts": _epoch_ms(pd.DatetimeIndex(sub["trade_date"])).to_numpy(),
+            "nav": sub["nav"].to_numpy(),
+            "nav_change_pct": sub["nav_change_pct"].to_numpy(),
+            "assets": sub["assets"].to_numpy(),
+            "shares_outstanding": sub["shares_outstanding"].to_numpy(),
+            "flow_usd": flow.to_numpy(),
+            # Expanding sum from inception. Causal by construction, and the series
+            # the washout question is actually about: did money keep arriving.
+            "flow_cum_usd": flow.fillna(0.0).cumsum().to_numpy(),
+            "rebalance_1pct_usd": metrics.rebalance_demand(
+                sub["assets"], multiple, 0.01
+            ).to_numpy(),
+        }))
+    return pd.concat(out, ignore_index=True)
+
+
 def serving(con) -> None:
     closes = _closes_by_symbol(con)
     frames = []
@@ -296,6 +348,12 @@ def serving(con) -> None:
     if not infl.empty:
         _swap_in(con, "board_inflation", infl, ("ts",))
         print(f"  = board_inflation {len(infl):,} rows")
+
+    flows = _flow_rows(con)
+    if not flows.empty:
+        _swap_in(con, "board_flows", flows, ("ticker", "ts"))
+        print(f"  = board_flows {len(flows):,} rows")
+
 
 
 def main() -> int:
