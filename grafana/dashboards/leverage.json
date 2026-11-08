@@ -1,0 +1,394 @@
+{
+  "uid": "offchart-leverage",
+  "title": "Market leverage (Fed Z.1)",
+  "tags": [
+    "offchart",
+    "leverage"
+  ],
+  "timezone": "utc",
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "",
+  "graphTooltip": 2,
+  "time": {
+    "from": "1945-01-01T00:00:00.000Z",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "offchart"
+      },
+      "title": "Latest quarter",
+      "description": "Federal Reserve Z.1, series FL663067003: broker-dealer receivables due from customers (margin loans AND OTHER receivables). This is NOT FINRA's margin debt and must not be read as it -- at 2026:Q2 it is $742bn against FINRA's $1,502bn, about 49%, and the ratio drifts rather than being a scalar. The Fed's 'Security brokers and dealers' is a national-accounts sector, so lending booked in bank-affiliated entities sits elsewhere in Z.1. Quarterly and published about ten weeks after quarter end, so it describes a quarter already over: a regime measure, never a timing one.",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "offchart"
+          },
+          "queryType": "table",
+          "rawQueryText": "SELECT broker_receivables AS 'Customer receivables', pct_of_household_equities AS 'Share of household equity holdings', household_equities AS 'Household equity holdings' FROM board_leverage ORDER BY ts DESC LIMIT 1",
+          "queryText": "SELECT broker_receivables AS 'Customer receivables', pct_of_household_equities AS 'Share of household equity holdings', household_equities AS 'Household equity holdings' FROM board_leverage ORDER BY ts DESC LIMIT 1",
+          "timeColumns": []
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "vertical",
+        "textMode": "value_and_name",
+        "wideLayout": true,
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "text": {
+          "titleSize": 16,
+          "valueSize": 40
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "\u2014"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Customer receivables"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Share of household equity holdings"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Household equity holdings"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "offchart"
+      },
+      "title": "Customer receivables as a share of household equity holdings",
+      "description": "THE PANEL TO READ, and the reason the denominator is part of this source. The level below is at an all-time high; this says the borrowing is a smaller share of the equities it is secured against than at any comparable peak -- 1.42% now against 3.05% at the 2000:Q1 top and 2.80% in 2007:Q2. A level that grows 593x since 1945 mostly records the economy getting bigger, which is why lib/metrics' third rule says a normaliser must be stated rather than assumed. Denominator is Z.1 FL153064105, households and nonprofit organizations' corporate equity holdings: a stock over a stock, not a stock over an annualised flow like GDP.",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "offchart"
+          },
+          "queryType": "time series",
+          "rawQueryText": "SELECT ts/1000 AS time, pct_of_household_equities AS 'share of equity holdings' FROM board_leverage WHERE ts BETWEEN $__from AND $__to ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, pct_of_household_equities AS 'share of equity holdings' FROM board_leverage WHERE ts BETWEEN $__from AND $__to ORDER BY ts",
+          "timeColumns": [
+            "time"
+          ]
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "min": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "semi-dark-orange"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "axisPlacement": "left",
+            "axisWidth": 80,
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "axisSoftMin": 0
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "offchart"
+      },
+      "title": "Customer receivables, level",
+      "description": "The number that gets quoted, and the one that misleads across decades. Its own panel rather than an overlay on the share above: dollars and percent are different scales and a second y-axis is the one chart mistake this board will not make. Shared crosshair ties them -- hover either and both move.",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "offchart"
+          },
+          "queryType": "time series",
+          "rawQueryText": "SELECT ts/1000 AS time, broker_receivables AS 'customer receivables' FROM board_leverage WHERE ts BETWEEN $__from AND $__to ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, broker_receivables AS 'customer receivables' FROM board_leverage WHERE ts BETWEEN $__from AND $__to ORDER BY ts",
+          "timeColumns": [
+            "time"
+          ]
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "showLegend": false,
+          "displayMode": "hidden",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "axisPlacement": "left",
+            "axisWidth": 80,
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "axisSoftMin": 0
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "offchart"
+      },
+      "title": "The denominator: household equity holdings",
+      "description": "Shown rather than hidden, because a ratio whose denominator you cannot see is a number you cannot check. The share above falls when this line rises faster than the borrowing does -- which is most of what happened after 2009.",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "offchart"
+          },
+          "queryType": "time series",
+          "rawQueryText": "SELECT ts/1000 AS time, household_equities AS 'household equity holdings' FROM board_leverage WHERE ts BETWEEN $__from AND $__to ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, household_equities AS 'household equity holdings' FROM board_leverage WHERE ts BETWEEN $__from AND $__to ORDER BY ts",
+          "timeColumns": [
+            "time"
+          ]
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "showLegend": false,
+          "displayMode": "hidden",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "semi-dark-green"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "axisPlacement": "left",
+            "axisWidth": 80,
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "axisSoftMin": 0
+          }
+        },
+        "overrides": []
+      }
+    }
+  ],
+  "annotations": {
+    "list": []
+  }
+}

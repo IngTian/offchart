@@ -34,6 +34,18 @@ this repository. Where a source's terms work that way, the honest answer is to f
 different source for the same series, or to go without it. A source is not added here
 because its data would be useful.
 
+**The worked example is margin debt.** Everyone means FINRA's monthly series, back to
+1997. It isn't here. FINRA grants use — content "shall be used ONLY for your own
+non-commercial personal or professional use" — but separately prohibits the mechanism a
+fetcher needs: **(d)** "develop or create a database of data using the FINRA Website",
+**(e)** "any data mining, scraping or harvesting tools (including robots)", **(m)** use
+of any portion of the site "in the development of any software program", and **(o)** any
+purpose without written permission. None of those are redistribution clauses, so
+"nothing is stored here" does not answer them. Reading their page yourself is squarely
+inside the grant; publishing a tool that automates (d), (e) and (m) is not. So market
+leverage here comes from the Federal Reserve's Z.1 Financial Accounts instead — which is
+*not the same series*, runs about half FINRA's level, and says so on the board. Per-security short interest has no non-FINRA source and is simply absent.
+
 ```
 make venv        # once: .venv with the two dependencies, built by uv
 make backfill    # once: full history into data/offchart.sqlite (~5 min, ~900 MB fetched)
@@ -49,7 +61,7 @@ with no error anywhere, so the target that can't be half-run is the point.
 
 ## What's in it
 
-4.7 million rows across ten sources, all fetched keyless from public endpoints.
+4.7 million rows across eleven sources, all fetched keyless from public endpoints.
 
 | source | what it is | rows | markets | from |
 |---|---|---:|---:|---|
@@ -60,6 +72,7 @@ with no error anywhere, so the target that can't be half-run is the point.
 | `prices` | daily closes for the reported markets | 541,633 | 87 symbols | 1990-01-01 |
 | `umich_sca` | UMich Surveys of Consumers — sentiment and inflation expectations | 683 | — | 1951-02-01 |
 | `proshares_flows` | ProShares leveraged ETF flows — NAV, assets, creation/redemption | 37,522 | 8 funds | 2006-06-19 |
+| `fed_z1_leverage` | Fed Z.1 — broker-dealer customer receivables + its denominator | 305 | — | **1945-12-31** |
 
 Counts measured 2026-11-07. They grow every week, so treat them as an order of
 magnitude and re-measure with `make status` rather than trusting this table.
@@ -119,7 +132,7 @@ behaves differently in two shells. Override any time with
 make backfill
 ```
 
-Full history for all ten sources: about five minutes, roughly 900 MB fetched, landing in
+Full history for all eleven sources: about five minutes, roughly 900 MB fetched, landing in
 `data/offchart.sqlite` (~1.7 GB — SQLite trades size for query speed, and the file is
 disposable). It's incremental after this.
 
@@ -283,7 +296,7 @@ it, or `CUME_DIST`, or `NTILE`, or reads an archive table.
 
 ## Licensing, and what is committed
 
-Eight of the ten sources are US federal work or openly published APIs. Two are not, and
+Nine of the eleven sources are US federal work or openly published APIs. Two are not, and
 the distinction is enforced by tests rather than by a comment.
 
 **Nothing in `data/` is committed.** Two independent reasons for the database: it holds
