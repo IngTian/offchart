@@ -594,3 +594,42 @@ def test_a_bull_bear_pair_adds_rebalancing_demand_rather_than_offsetting() -> No
     bear = M.rebalance_demand(assets, -3.0, 0.01).iloc[0]
     assert bull > 0 and bear > 0, "both sides trade in the same direction"
     assert bull + bear == pytest.approx(180.0)
+
+
+def test_an_inverse_fund_rebalances_at_1x_while_its_bull_twin_does_not() -> None:
+    """Why the board carries a -1x series and no +1x one.
+
+    The asymmetry looks like an inconsistency on the board until the arithmetic is
+    done, so it is pinned rather than left to the panel description. m^2-m is 0 at
+    m=+1 -- an unleveraged fund that gains 1% on a 1% move is already correctly
+    positioned and trades nothing -- but 2 at m=-1, because a SHORT fund's exposure
+    grows as the index falls and it has to buy back. A -1x fund rebalances exactly
+    as hard per dollar as a +2x.
+    """
+    assets = pd.Series([1_000.0])
+    assert M.rebalance_demand(assets, 1.0, 0.01).iloc[0] == 0.0
+    assert M.rebalance_demand(assets, -1.0, 0.01).iloc[0] == pytest.approx(20.0)
+    assert (M.rebalance_demand(assets, -1.0, 0.01).iloc[0]
+            == pytest.approx(M.rebalance_demand(assets, 2.0, 0.01).iloc[0]))
+
+
+#: Only the magnitudes this repo actually maps. A 4x case was tried and
+#: rebalance_demand refused it -- KNOWN_MULTIPLES fails loudly on a multiple nobody
+#: has checked against a prospectus, which is the right answer and is pinned
+#: elsewhere, so there is no point asserting the ratio on a fund that cannot exist.
+@pytest.mark.parametrize(("magnitude", "ratio"), [(2.0, 3.0), (3.0, 2.0)])
+def test_the_bear_bull_coefficient_ratio_is_not_a_fixed_factor(
+    magnitude: float, ratio: float
+) -> None:
+    """(m^2+m)/(m^2-m) = (m+1)/(m-1), so the asymmetry SHRINKS as leverage rises.
+
+    Pinned because the panel description used to say an inverse fund "rebalances
+    twice as hard", generalising from the 3x pair. That is wrong on the 2x pair,
+    which is three times -- and 2x is the only pair on the semiconductor board, so
+    the claim was wrong exactly where a reader was most likely to check it.
+    """
+    assets = pd.Series([1_000.0])
+    bull = M.rebalance_demand(assets, magnitude, 0.01).iloc[0]
+    bear = M.rebalance_demand(assets, -magnitude, 0.01).iloc[0]
+    assert bear / bull == pytest.approx(ratio)
+    assert bear / bull == pytest.approx((magnitude + 1) / (magnitude - 1))
