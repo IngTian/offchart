@@ -1,6 +1,6 @@
 {
   "uid": "offchart-flows",
-  "title": "Leveraged ETF flows",
+  "title": "ETF flows \u2014 leveraged and unleveraged",
   "tags": [
     "offchart",
     "flows"
@@ -55,7 +55,7 @@
         "includeAll": false,
         "allowCustomValue": false,
         "definition": "funds on the selected index, searchable by name",
-        "query": "SELECT DISTINCT ticker_label AS __text, ticker AS __value FROM board_flows WHERE index_family='$family' ORDER BY __text",
+        "query": "SELECT DISTINCT ticker_label AS __text, ticker AS __value FROM board_flows WHERE index_family='$family' ORDER BY multiple DESC, __text",
         "current": {
           "selected": false,
           "text": "TQQQ \u2014 ProShares UltraPro QQQ (+3x NDX)",
@@ -179,7 +179,7 @@
         "uid": "offchart"
       },
       "title": "Every fund, latest close",
-      "description": "Grouped by index family, bull funds first. Do NOT sum 'per 1% move' down the whole column: a dollar of NDX demand and a dollar of SPX demand are not interchangeable, and adding them assumes the two indices move together. Within one family the column DOES add, and adds across the bull/bear pair too -- both sides buy into a rally, because an inverse fund's short exposure grows as the index falls. Cumulative flow runs from each fund's inception.",
+      "description": "Each fund at ITS OWN latest close, not a shared one -- issuers publish on different lags (ProShares and VanEck carry the previous session, SSGA is a day behind), so a single global cut-off would silently drop whichever fund was last. The 'as of' column is what makes that visible rather than something you have to know. Grouped by index family, bull funds first. Unleveraged funds read exactly 0 in 'per 1% move' and that is the true answer, not a gap: (multiple^2 - multiple) is zero at 1x, so a plain ETF forces no mechanical trading at all. Do NOT sum 'per 1% move' down the whole column: a dollar of NDX demand and a dollar of SPX demand are not interchangeable, and adding them assumes the two indices move together. Within one family the column DOES add, and adds across the bull/bear pair too -- both sides buy into a rally, because an inverse fund's short exposure grows as the index falls. Cumulative flow runs from each fund's inception.",
       "gridPos": {
         "h": 9,
         "w": 17,
@@ -194,8 +194,8 @@
             "uid": "offchart"
           },
           "queryType": "table",
-          "rawQueryText": "SELECT ticker_label AS 'fund', index_family AS 'index', nav_change_pct AS 'NAV chg %', flow_usd AS 'flow today', flow_cum_usd AS 'cumulative flow', assets AS 'assets', rebalance_1pct_usd AS 'per 1% move' FROM board_flows WHERE ts = (SELECT MAX(ts) FROM board_flows) ORDER BY index_family, multiple DESC",
-          "queryText": "SELECT ticker_label AS 'fund', index_family AS 'index', nav_change_pct AS 'NAV chg %', flow_usd AS 'flow today', flow_cum_usd AS 'cumulative flow', assets AS 'assets', rebalance_1pct_usd AS 'per 1% move' FROM board_flows WHERE ts = (SELECT MAX(ts) FROM board_flows) ORDER BY index_family, multiple DESC",
+          "rawQueryText": "SELECT ticker_label AS 'fund', index_family AS 'index', leverage_kind AS 'kind', trade_date AS 'as of', nav_change_pct AS 'NAV chg %', flow_usd AS 'flow today', flow_cum_usd AS 'cumulative flow', assets AS 'assets', rebalance_1pct_usd AS 'per 1% move' FROM board_flows b WHERE ts = (SELECT MAX(ts) FROM board_flows x WHERE x.ticker = b.ticker) ORDER BY index_family, multiple DESC",
+          "queryText": "SELECT ticker_label AS 'fund', index_family AS 'index', leverage_kind AS 'kind', trade_date AS 'as of', nav_change_pct AS 'NAV chg %', flow_usd AS 'flow today', flow_cum_usd AS 'cumulative flow', assets AS 'assets', rebalance_1pct_usd AS 'per 1% move' FROM board_flows b WHERE ts = (SELECT MAX(ts) FROM board_flows x WHERE x.ticker = b.ticker) ORDER BY index_family, multiple DESC",
           "timeColumns": []
         }
       ],
@@ -344,6 +344,30 @@
               {
                 "id": "decimals",
                 "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "kind"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "as of"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
               }
             ]
           }
