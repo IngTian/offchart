@@ -1,216 +1,953 @@
 {
   "uid": "offchart-positioning",
   "title": "Positioning",
-  "description": "CFTC Commitments of Traders. Net position of a cohort group as a share of open interest, with the underlying price above and open interest below. Percentile ranks are causal and precomputed in pandas by scripts/build -- see that module for why they are not SQL.",
-  "tags": ["offchart", "cftc"],
+  "tags": [
+    "offchart"
+  ],
   "timezone": "utc",
   "editable": false,
-  "graphTooltip": 2,
   "schemaVersion": 39,
+  "version": 2,
   "refresh": "",
-  "time": { "from": "now-5y", "to": "now" },
+  "graphTooltip": 2,
+  "time": {
+    "from": "now-5y",
+    "to": "now"
+  },
   "templating": {
     "list": [
       {
         "name": "dataset",
         "label": "Report family",
         "type": "query",
-        "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
-        "query": "SELECT DISTINCT dataset FROM board_positioning ORDER BY dataset",
+        "datasource": {
+          "type": "frser-sqlite-datasource",
+          "uid": "offchart"
+        },
         "refresh": 1,
-        "includeAll": false,
+        "sort": 0,
         "multi": false,
-        "current": { "text": "cftc_tff_fut", "value": "cftc_tff_fut" }
+        "includeAll": false,
+        "allowCustomValue": false,
+        "definition": "report families present in the serving table",
+        "query": "SELECT DISTINCT dataset FROM board_positioning ORDER BY dataset",
+        "current": {
+          "selected": false,
+          "text": "cftc_tff_fut",
+          "value": "cftc_tff_fut"
+        },
+        "options": [],
+        "hide": 0,
+        "skipUrlSync": false
       },
       {
         "name": "market",
         "label": "Market",
         "type": "query",
-        "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
-        "query": "SELECT DISTINCT market_code FROM board_positioning WHERE dataset='$dataset' ORDER BY market_code",
+        "datasource": {
+          "type": "frser-sqlite-datasource",
+          "uid": "offchart"
+        },
         "refresh": 1,
-        "includeAll": false,
+        "sort": 0,
         "multi": false,
-        "current": { "text": "20974+", "value": "20974+" }
+        "includeAll": false,
+        "allowCustomValue": false,
+        "definition": "served markets, searchable by name",
+        "query": "SELECT DISTINCT market_label AS __text, market_code AS __value FROM board_positioning WHERE dataset='$dataset' ORDER BY __text",
+        "current": {
+          "selected": false,
+          "text": "NASDAQ-100 Consolidated (20974+)",
+          "value": "20974+"
+        },
+        "options": [],
+        "hide": 0,
+        "skipUrlSync": false
       },
       {
         "name": "group",
-        "label": "Cohort group",
+        "label": "Cohort",
         "type": "query",
-        "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
-        "query": "SELECT DISTINCT cohort_group FROM board_positioning WHERE dataset='$dataset' ORDER BY cohort_group",
+        "datasource": {
+          "type": "frser-sqlite-datasource",
+          "uid": "offchart"
+        },
         "refresh": 1,
-        "includeAll": false,
+        "sort": 0,
         "multi": false,
-        "current": { "text": "asset_mgr+lev_money", "value": "asset_mgr+lev_money" }
+        "includeAll": false,
+        "allowCustomValue": false,
+        "definition": "cohort groups for this family, by reader-facing name",
+        "query": "SELECT DISTINCT cohort_label AS __text, cohort_group AS __value FROM board_positioning WHERE dataset='$dataset' ORDER BY __text",
+        "current": {
+          "selected": false,
+          "text": "Asset managers + Hedge funds",
+          "value": "asset_mgr+lev_money"
+        },
+        "options": [],
+        "hide": 0,
+        "skipUrlSync": false
       }
     ]
   },
   "panels": [
     {
       "id": 1,
-      "type": "timeseries",
-      "title": "Price ($market)",
-      "description": "The mapped underlying, sampled as-of each Tuesday report date, backward only and staleness-capped at 10 days. A price beside a position is contemporaneous with the position, not with the moment it was published.",
-      "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 0 },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 1,
-            "fillOpacity": 0,
-            "spanNulls": false,
-            "showPoints": "never",
-            "axisPlacement": "left",
-            "axisWidth": 80
-          },
-          "decimals": 2
-        },
-        "overrides": []
+      "type": "stat",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "offchart"
       },
-      "options": {
-        "legend": { "displayMode": "hidden", "showLegend": false },
-        "tooltip": { "mode": "single", "sort": "none" }
+      "title": "Latest reading \u2014 ${market:text} \u00b7 ${group:text}",
+      "description": "The newest row for this market and cohort, regardless of the time picker -- so it does not move when you pan or zoom, while every chart below does; the table beside it reads the same week. The percentile is CAUSAL: each week is ranked only against weeks at or before itself, computed in pandas and never in SQL. It is blank where the pool is under 140 weeks, because a rank off a short history renders exactly as confidently as one off twenty years. Open interest and its percentile are market-level, identical on every cohort row, so they live in their own panels rather than being printed here as if they described this cohort.",
+      "gridPos": {
+        "h": 9,
+        "w": 7,
+        "x": 0,
+        "y": 0
       },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
-          "queryType": "time series",
-          "timeColumns": ["time"],
-          "rawQueryText": "SELECT ts/1000 AS time, price AS 'price' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' AND ts BETWEEN $__from AND $__to ORDER BY ts",
-          "queryText": "SELECT ts/1000 AS time, price AS 'price' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' AND ts BETWEEN $__from AND $__to ORDER BY ts"
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "offchart"
+          },
+          "queryType": "table",
+          "rawQueryText": "SELECT share AS '% of open interest', CASE WHEN n_pool >= 140 THEN share_pctile END AS 'Percentile of own history', chg_2w AS '2-week change (pp)' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' ORDER BY ts DESC LIMIT 1",
+          "queryText": "SELECT share AS '% of open interest', CASE WHEN n_pool >= 140 THEN share_pctile END AS 'Percentile of own history', chg_2w AS '2-week change (pp)' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' ORDER BY ts DESC LIMIT 1",
+          "timeColumns": []
         }
-      ]
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "wideLayout": true,
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "text": {
+          "titleSize": 20,
+          "valueSize": 36
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "\u2014"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "% of open interest"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Percentile of own history"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "noValue",
+                "value": "pool too short to rank"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "2-week change (pp)"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "id": 2,
       "type": "timeseries",
-      "title": "Net position as % of open interest",
-      "description": "Net (long minus short) of the selected cohort group, over the market's open interest. Dimensionless, so a contract re-specification cancels top and bottom.",
-      "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 9 },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "spanNulls": false,
-            "showPoints": "never",
-            "axisPlacement": "left",
-            "axisWidth": 80,
-            "thresholdsStyle": { "mode": "line" }
-          },
-          "unit": "percent",
-          "decimals": 2,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "transparent", "value": null },
-              { "color": "text", "value": 0 }
-            ]
-          }
-        },
-        "overrides": []
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "offchart"
       },
-      "options": {
-        "legend": { "displayMode": "hidden", "showLegend": false },
-        "tooltip": { "mode": "single", "sort": "none" }
+      "title": "Asset managers vs hedge funds vs their total \u2014 ${market:text}",
+      "description": "All three on ONE axis because all three are the same quantity: net position as a percent of open interest. 'Speculative total' is the EXACT SUM of the two components on the financial-futures family, so it is drawn unfilled and never stacked -- stacking a part with its own total draws twice the real exposure. On the commodity and legacy families the two components do not exist and the total falls back to managed money / non-commercial, so the panel degrades to an honest single line rather than going blank. No percentile here: the combined cohort's percentile is not bounded by its components'.",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 9
       },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "offchart"
+          },
           "queryType": "time series",
-          "timeColumns": ["time"],
-          "rawQueryText": "SELECT ts/1000 AS time, share AS '% of open interest' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' AND ts BETWEEN $__from AND $__to ORDER BY ts",
-          "queryText": "SELECT ts/1000 AS time, share AS '% of open interest' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' AND ts BETWEEN $__from AND $__to ORDER BY ts"
+          "rawQueryText": "SELECT ts/1000 AS time, MAX(CASE WHEN cohort_group='asset_mgr' THEN share END) AS 'Asset managers', MAX(CASE WHEN cohort_group='lev_money' THEN share END) AS 'Hedge funds', MAX(CASE WHEN cohort_group IN ('asset_mgr+lev_money','m_money','noncomm') THEN share END) AS 'Speculative total' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND ts BETWEEN $__from AND $__to GROUP BY ts ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, MAX(CASE WHEN cohort_group='asset_mgr' THEN share END) AS 'Asset managers', MAX(CASE WHEN cohort_group='lev_money' THEN share END) AS 'Hedge funds', MAX(CASE WHEN cohort_group IN ('asset_mgr+lev_money','m_money','noncomm') THEN share END) AS 'Speculative total' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND ts BETWEEN $__from AND $__to GROUP BY ts ORDER BY ts",
+          "timeColumns": [
+            "time"
+          ]
         }
-      ]
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max"
+          ],
+          "width": 240
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "text",
+                "value": 0
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "axisPlacement": "left",
+            "axisWidth": 80,
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "dashed"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "axisCenteredZero": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Asset managers"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Hedge funds"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Speculative total"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "semi-dark-purple"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "id": 3,
       "type": "timeseries",
-      "title": "Open interest (contracts)",
-      "description": "On screen because a share can move when the cohort trades or when open interest does, and the share alone cannot say which.",
-      "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
-      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 18 },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 1,
-            "fillOpacity": 0,
-            "spanNulls": false,
-            "showPoints": "never",
-            "axisPlacement": "left",
-            "axisWidth": 80,
-            "axisSoftMin": 0
-          },
-          "unit": "short",
-          "decimals": 0
-        },
-        "overrides": []
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "offchart"
       },
-      "options": {
-        "legend": { "displayMode": "hidden", "showLegend": false },
-        "tooltip": { "mode": "single", "sort": "none" }
+      "title": "Net position as % of open interest \u2014 ${group:text}",
+      "description": "The cohort the dropdown selects, which is the only share chart that works for EVERY cohort on every family -- dealers, producers, swap dealers included. Coloured by SIGN rather than by identity: the entity here changes with the dropdown, so there is no entity for a colour to follow, and a signed quantity straddling zero is the diverging case. Red below zero (net short), blue above (net long); those two hues are deliberately outside the cohort palette above so no colour means two things on this board.",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 19
       },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "offchart"
+          },
           "queryType": "time series",
-          "timeColumns": ["time"],
-          "rawQueryText": "SELECT ts/1000 AS time, open_interest AS 'open interest' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' AND ts BETWEEN $__from AND $__to ORDER BY ts",
-          "queryText": "SELECT ts/1000 AS time, open_interest AS 'open interest' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' AND ts BETWEEN $__from AND $__to ORDER BY ts"
+          "rawQueryText": "SELECT ts/1000 AS time, share AS '% of open interest' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' AND ts BETWEEN $__from AND $__to ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, share AS '% of open interest' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' AND ts BETWEEN $__from AND $__to ORDER BY ts",
+          "timeColumns": [
+            "time"
+          ]
         }
-      ]
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "semi-dark-red",
+                "value": null
+              },
+              {
+                "color": "semi-dark-blue",
+                "value": 0
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 14,
+            "gradientMode": "scheme",
+            "spanNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "axisPlacement": "left",
+            "axisWidth": 80,
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "dashed"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "axisCenteredZero": true
+          }
+        },
+        "overrides": []
+      }
     },
     {
       "id": 4,
-      "type": "stat",
-      "title": "Latest reading",
-      "description": "The percentile is causal -- each week ranked only against weeks up to and including itself -- and computed within the market's current contract-unit segment for open interest. n_pool is how many weeks the share's rank is measured against.",
-      "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
-      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 24 },
-      "fieldConfig": {
-        "defaults": { "decimals": 2 },
-        "overrides": [
-          {
-            "matcher": { "id": "byName", "options": "share pctile" },
-            "properties": [{ "id": "decimals", "value": 0 }]
-          },
-          {
-            "matcher": { "id": "byName", "options": "OI pctile" },
-            "properties": [{ "id": "decimals", "value": 0 }]
-          },
-          {
-            "matcher": { "id": "byName", "options": "weeks ranked against" },
-            "properties": [{ "id": "decimals", "value": 0 }]
-          }
-        ]
+      "type": "timeseries",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "offchart"
       },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "orientation": "horizontal",
-        "textMode": "value_and_name",
-        "colorMode": "none",
-        "graphMode": "none",
-        "justifyMode": "center"
+      "title": "Percentiles of own history \u2014 ${group:text}",
+      "description": "The repo's distinguishing asset as a HISTORY rather than one number. Both series are 0-100 so one axis is honest. Every point ranks its week against weeks at or before itself only; the ranks are precomputed in pandas because the segment boundaries a rank must respect come from a regex over free-text contract units. The share percentile is the COHORT's and is blank under 140 weeks of pool; the open-interest percentile is the MARKET's and is ranked only within the current contract-unit segment, so n_pool describes the first and not the second. Dashed lines mark the 10th and 90th.",
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 27
       },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "frser-sqlite-datasource", "uid": "offchart" },
-          "queryType": "table",
-          "timeColumns": [],
-          "rawQueryText": "SELECT share AS '% of OI', share_pctile AS 'share pctile', oi_pctile AS 'OI pctile', chg_2w AS 'change over 2w', n_pool AS 'weeks ranked against' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' ORDER BY ts DESC LIMIT 1",
-          "queryText": "SELECT share AS '% of OI', share_pctile AS 'share pctile', oi_pctile AS 'OI pctile', chg_2w AS 'change over 2w', n_pool AS 'weeks ranked against' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' ORDER BY ts DESC LIMIT 1"
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "offchart"
+          },
+          "queryType": "time series",
+          "rawQueryText": "SELECT ts/1000 AS time, CASE WHEN n_pool >= 140 THEN share_pctile END AS 'Share percentile (cohort)', oi_pctile AS 'Open interest percentile (market)' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' AND ts BETWEEN $__from AND $__to ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, CASE WHEN n_pool >= 140 THEN share_pctile END AS 'Share percentile (cohort)', oi_pctile AS 'Open interest percentile (market)' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' AND ts BETWEEN $__from AND $__to ORDER BY ts",
+          "timeColumns": [
+            "time"
+          ]
         }
-      ]
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "min": 0,
+          "max": 100,
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "text",
+                "value": 10
+              },
+              {
+                "color": "text",
+                "value": 90
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "axisPlacement": "left",
+            "axisWidth": 80,
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "dashed"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Share percentile (cohort)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Open interest percentile (market)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "semi-dark-green"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "offchart"
+      },
+      "title": "Open interest (contracts)",
+      "description": "A MARKET-week quantity, identical on every cohort row, so it is not filtered by the cohort dropdown and does not pretend to be per-cohort. MAX over the week's rows, never SUM: summing across cohort rows yields a plausible number three to six times too large. Contracts, not notional -- so it is not comparable across contract sizes, which is why full-size and micro bitcoin are separate markets here rather than one line.",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 34
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "offchart"
+          },
+          "queryType": "time series",
+          "rawQueryText": "SELECT ts/1000 AS time, MAX(open_interest) AS 'open interest' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND ts BETWEEN $__from AND $__to GROUP BY ts ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, MAX(open_interest) AS 'open interest' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND ts BETWEEN $__from AND $__to GROUP BY ts ORDER BY ts",
+          "timeColumns": [
+            "time"
+          ]
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "semi-dark-green"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "axisPlacement": "left",
+            "axisWidth": 80,
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "axisSoftMin": 0
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "open interest"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "semi-dark-green"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "offchart"
+      },
+      "title": "Price \u2014 ${market:text}",
+      "description": "A PROXY, never the reported contract -- lib/pricemap names the gap per entry, and the worst case is VIX, where positioning is in futures while this price is spot. Sampled as-of each report Tuesday, strictly backward and capped at 10 days of staleness, so a dead symbol leaves a gap instead of a flat line. Its own panel rather than an overlay on positioning: price and percent-of-open-interest are different scales, and a second y-axis is the one chart mistake this board will not make. Blank for most commodity and legacy markets, which have no mapped symbol.",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 34
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "offchart"
+          },
+          "queryType": "time series",
+          "rawQueryText": "SELECT ts/1000 AS time, MAX(price) AS 'price' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND ts BETWEEN $__from AND $__to GROUP BY ts ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, MAX(price) AS 'price' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND ts BETWEEN $__from AND $__to GROUP BY ts ORDER BY ts",
+          "timeColumns": [
+            "time"
+          ]
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "showLegend": false,
+          "displayMode": "hidden",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2,
+          "noValue": "no mapped price for this market",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "axisPlacement": "left",
+            "axisWidth": 80,
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "offchart"
+      },
+      "title": "Latest week, every cohort \u2014 ${market:text}",
+      "description": "The numeric answer to 'show them separately' for every cohort at once, on all three families. Combined rows sort last and are flagged, because a combined row is the sum of rows above it and summing the column would double-count. Open interest and its percentile are excluded on purpose: they are market-level, and printing them on six rows invites reading six measurements where there is one.",
+      "gridPos": {
+        "h": 9,
+        "w": 17,
+        "x": 7,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "offchart"
+          },
+          "queryType": "table",
+          "rawQueryText": "SELECT cohort_label AS 'cohort', share AS '% of OI', CASE WHEN n_pool >= 140 THEN share_pctile END AS 'percentile', chg_2w AS '2w change (pp)', net AS 'net contracts', n_pool AS 'weeks ranked against', TRIM((CASE WHEN cohort_group LIKE '%+%' THEN 'sum of its components ' ELSE '' END) || (CASE WHEN n_pool < 140 THEN 'short history' ELSE '' END)) AS 'note' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND ts = (SELECT MAX(ts) FROM board_positioning WHERE dataset='$dataset' AND market_code='$market') ORDER BY (cohort_group LIKE '%+%'), ABS(share) DESC",
+          "queryText": "SELECT cohort_label AS 'cohort', share AS '% of OI', CASE WHEN n_pool >= 140 THEN share_pctile END AS 'percentile', chg_2w AS '2w change (pp)', net AS 'net contracts', n_pool AS 'weeks ranked against', TRIM((CASE WHEN cohort_group LIKE '%+%' THEN 'sum of its components ' ELSE '' END) || (CASE WHEN n_pool < 140 THEN 'short history' ELSE '' END)) AS 'note' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND ts = (SELECT MAX(ts) FROM board_positioning WHERE dataset='$dataset' AND market_code='$market') ORDER BY (cohort_group LIKE '%+%'), ABS(share) DESC",
+          "timeColumns": []
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "md",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "noValue": "\u2014"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cohort"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              },
+              {
+                "id": "custom.width",
+                "value": 240
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "% of OI"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "semi-dark-red",
+                      "value": null
+                    },
+                    {
+                      "color": "semi-dark-blue",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "percentile"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "noValue",
+                "value": "\u2014"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "2w change (pp)"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "net contracts"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "weeks ranked against"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      }
     }
-  ]
+  ],
+  "annotations": {
+    "list": []
+  }
 }

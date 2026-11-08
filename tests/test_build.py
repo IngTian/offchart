@@ -127,3 +127,84 @@ def test_two_swaps_then_the_serving_handoff_leave_no_transaction_open(
     )
     for table in ("board_positioning", "board_inflation"):
         assert con.execute(f"SELECT ts, v FROM {table}").fetchall() == [(2, 20.0)]
+
+
+# ------------------------------------------------- the dropdown label columns
+
+def test_every_served_row_carries_a_reader_facing_label(tmp_path: Path) -> None:
+    """The labels are a serving-table column because they cannot be anything else.
+
+    A Grafana template variable may read only board_positioning / board_inflation
+    (tests/test_grafana asserts it over variable queries too), so a market name that
+    scripts/build does not carry cannot reach the Market dropdown at all -- which is
+    the whole reason the dropdown used to list raw CFTC codes and the reader had to
+    search "133742" instead of "btc".
+
+    Asserted on the real build path against the committed fixture rather than on a
+    hand-made frame, because the failure this guards is a column that silently comes
+    out empty: the dashboard lint reads SQL text, not the schema, so an empty label
+    column is green in CI and blank in the browser.
+    """
+    src = ROOT / "tests" / "fixtures" / "fixture.sqlite"
+    work = tmp_path / "b.sqlite"
+    work.write_bytes(src.read_bytes())
+
+    con = db.connect(work)
+    try:
+        build.serving(con)
+        con.commit()
+        rows = con.execute(
+            "SELECT market_code, market_label, cohort_group, cohort_label "
+            "FROM board_positioning"
+        ).fetchall()
+    finally:
+        con.close()
+
+    assert rows, "the fixture built no positioning rows at all"
+
+    for code, mlabel, group, clabel in rows:
+        assert mlabel, f"{code} has an empty market_label"
+        assert clabel, f"{group} has an empty cohort_label"
+        assert code in mlabel, (
+            f"market_label {mlabel!r} omits the code {code!r}. The dropdown "
+            "fuzzy-matches the label only, so dropping the code makes the code "
+            "unsearchable -- keep both in it."
+        )
+
+    # One label per code, or Grafana's uniqBy-on-value dedupe picks one arbitrarily
+    # and the fallback of filtering panels on the label stops being safe.
+    by_code: dict[str, set[str]] = {}
+    for code, mlabel, _g, _c in rows:
+        by_code.setdefault(code, set()).add(mlabel)
+    ambiguous = {c: v for c, v in by_code.items() if len(v) > 1}
+    assert not ambiguous, f"these codes carry more than one label: {ambiguous}"
+
+
+def test_the_full_size_bitcoin_contract_is_served(tmp_path: Path) -> None:
+    """build.FORCE_SERVED exists for one measured mislabelling, so pin it.
+
+    133742 is MICRO BITCOIN at a fiftieth of the notional, and it clears the
+    contract-count liquidity floor that 133741 (5 BTC) misses -- so the board served
+    the micro leg and called it bitcoin. A tier filter denominated in contracts
+    cannot see that, which is why the allowlist is not a threshold change.
+    """
+    assert "133741" in build.FORCE_SERVED
+
+    src = ROOT / "tests" / "fixtures" / "fixture.sqlite"
+    work = tmp_path / "b.sqlite"
+    work.write_bytes(src.read_bytes())
+
+    con = db.connect(work)
+    try:
+        build.serving(con)
+        con.commit()
+        labels = [r[0] for r in con.execute(
+            "SELECT DISTINCT market_label FROM board_positioning WHERE market_code='133741'"
+        )]
+    finally:
+        con.close()
+
+    assert labels, (
+        "133741 built no serving rows. The fixture carries it, so either the "
+        "allowlist stopped being passed to assign_tiers or the tier filter changed."
+    )
