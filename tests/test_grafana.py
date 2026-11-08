@@ -52,7 +52,7 @@ NON_CAUSAL_SQL = re.compile(
 #: computed in pandas by scripts/build._flow_rows, so a panel reads them rather than
 #: differencing or accumulating in SQL. Adding a name here is a deliberate act -- the
 #: set is the whole enforcement of "panels read serving tables only".
-SERVING_TABLES = {"board_positioning", "board_inflation", "board_flows", "board_leverage"}
+SERVING_TABLES = {"board_positioning", "board_inflation", "board_flows"}
 
 
 def _load(path: Path) -> dict:

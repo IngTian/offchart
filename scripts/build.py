@@ -324,60 +324,6 @@ def _flow_rows(con) -> pd.DataFrame:
     return pd.concat(out, ignore_index=True)
 
 
-def _leverage_rows(con) -> pd.DataFrame:
-    """Market-wide broker-dealer customer receivables, with its denominator applied.
-
-    The ratio is computed here rather than in a panel for the usual reason -- a panel
-    reads a serving table -- but also because the ratio is the only honest way to
-    read this series across decades. The level grows 593x from 1945 and almost all of
-    that is the economy getting bigger; lib/metrics' third rule is that a normaliser
-    must be stated rather than assumed, so it is stated here and stored beside the
-    level rather than left to whoever writes the next panel.
-    """
-    raw = db.read_frame(con, "fed_z1_leverage")
-    if raw.empty:
-        print("  ! fed_z1_leverage has no rows -- run `make pull` first")
-        return pd.DataFrame()
-
-    raw = raw.copy()
-    raw["period_date"] = pd.to_datetime(raw["period_date"])
-    raw = raw.sort_values("period_date").reset_index(drop=True)
-
-    def num(column):
-        return pd.to_numeric(raw.get(column), errors="coerce")
-
-    receivables = num("broker_receivables")
-    equities = num("household_equities")
-    households = num("household_margin")
-    hf_dom = num("hedge_fund_margin_domestic")
-    hf_for = num("hedge_fund_margin_foreign")
-    banks = num("household_margin_from_banks")
-
-    out = pd.DataFrame({
-        "period_date": raw["period_date"].dt.strftime("%Y-%m-%d"),
-        "ts": _epoch_ms(pd.DatetimeIndex(raw["period_date"])).to_numpy(),
-        "broker_receivables": receivables.to_numpy(),
-        "household_equities": equities.to_numpy(),
-        "household_margin": households.to_numpy(),
-        "hedge_fund_margin": (hf_dom.fillna(0) + hf_for.fillna(0)).to_numpy(),
-        "household_margin_from_banks": banks.to_numpy(),
-        # metrics.share_of guards the vanishing denominator, which matters at the
-        # 1945 end where both series are small.
-        "pct_of_household_equities": metrics.share_of(receivables, equities).to_numpy(),
-        # The household-only share, which is the series that IS comparable across the
-        # whole history: the aggregate's population changed when hedge funds entered
-        # it, this one's did not.
-        "household_pct_of_equities": metrics.share_of(households, equities).to_numpy(),
-        # How much of the aggregate is no longer households. 0% through 2009, 69% at
-        # 2026:Q2 -- carried as a column so the composition break is on the board
-        # rather than in a docstring nobody opens.
-        "pct_aggregate_hedge_funds": metrics.share_of(
-            hf_dom.fillna(0) + hf_for.fillna(0), receivables
-        ).to_numpy(),
-    })
-    return out
-
-
 def serving(con) -> None:
     closes = _closes_by_symbol(con)
     frames = []
@@ -408,10 +354,6 @@ def serving(con) -> None:
         _swap_in(con, "board_flows", flows, ("ticker", "ts"))
         print(f"  = board_flows {len(flows):,} rows")
 
-    lev = _leverage_rows(con)
-    if not lev.empty:
-        _swap_in(con, "board_leverage", lev, ("ts",))
-        print(f"  = board_leverage {len(lev):,} rows")
 
 
 def main() -> int:
