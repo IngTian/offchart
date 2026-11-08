@@ -186,7 +186,18 @@ def _positioning_rows(dataset: str, frame: pd.DataFrame, closes: dict[str, pd.Da
             if picked.empty:
                 continue
             by = picked.groupby("report_date")
-            net = (by["long"].sum() - by["short"].sum()).astype(float)
+            # The two sides separately, not only their difference. A net of zero is
+            # two different animals -- a cohort holding nothing, and a cohort holding
+            # a large book on both sides -- and only long and short can tell them
+            # apart. metrics.net/gross/directional_purity carry the reasoning.
+            longs = by["long"].sum().astype(float).reindex(oi.index)
+            shorts = by["short"].sum().astype(float).reindex(oi.index)
+            net = metrics.net(longs, shorts)
+            gross = metrics.gross(longs, shorts)
+            # net/gross in [-1, 1]: 1 means every contract points the same way, near
+            # zero means a big two-sided book with little net view. This is the column
+            # that distinguishes "flat because small" from "flat because hedged".
+            purity = metrics.directional_purity(net, gross)
             share = metrics.share_of(net.reindex(oi.index), oi)
             rank = metrics.expanding_percentile(share)
             chg = metrics.flow(
@@ -207,6 +218,21 @@ def _positioning_rows(dataset: str, frame: pd.DataFrame, closes: dict[str, pd.Da
                 "ts": _epoch_ms(oi.index).to_numpy(),
                 "segment_id": seg.to_numpy(),
                 "net": net.reindex(oi.index).to_numpy(),
+                "long": longs.to_numpy(),
+                "short": shorts.to_numpy(),
+                # long + short. NON-NEGATIVE by construction, which is why a percent
+                # change on it is permitted where one on `net` is not -- a fragility
+                # measure rather than a direction one: it rises when a cohort adds on
+                # BOTH sides, which is when a forced unwind has the most to sell.
+                #
+                # One documented data caveat it cannot express: pre-1999 legacy
+                # non-reportable long/short columns are occasionally NEGATIVE (46 rows,
+                # worst -228,000 contracts in 1986), a publishing artefact of the era.
+                # So gross can read below zero on that slice even though the quantity
+                # cannot. Left as the publisher's number rather than clamped, because
+                # a clamp would hide a bad input instead of showing it.
+                "gross": gross.to_numpy(),
+                "purity": purity.to_numpy(),
                 "open_interest": oi.to_numpy(),
                 "share": share.to_numpy(),
                 "share_pctile": rank.to_numpy(),

@@ -602,7 +602,7 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 34
+        "y": 41
       },
       "targets": [
         {
@@ -704,7 +704,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 34
+        "y": 41
       },
       "targets": [
         {
@@ -784,7 +784,7 @@
         "uid": "offchart"
       },
       "title": "Latest week, every cohort \u2014 ${market:text}",
-      "description": "The numeric answer to 'show them separately' for every cohort at once, on all three families. Combined rows sort last and are flagged, because a combined row is the sum of rows above it and summing the column would double-count. Open interest and its percentile are excluded on purpose: they are market-level, and printing them on six rows invites reading six measurements where there is one.",
+      "description": "Every cohort at once, with BOTH SIDES rather than only their difference. Read long and short against gross and purity: a cohort can show a small net while holding a large two-sided book, and only these columns separate 'flat because small' from 'flat because hedged'. purity is net/gross in [-1,1] -- at 1 every contract points the same way. Combined rows sort last and are flagged, because a combined row is the sum of rows above it and summing any column here would double-count. Open interest and its percentile are excluded on purpose: they are market-level, so printing them per cohort invites reading six measurements where there is one. 2-week change and the ranking pool are on the headline panel instead, where they describe the selected cohort.",
       "gridPos": {
         "h": 9,
         "w": 17,
@@ -799,8 +799,8 @@
             "uid": "offchart"
           },
           "queryType": "table",
-          "rawQueryText": "SELECT cohort_label AS 'cohort', share AS '% of OI', CASE WHEN n_pool >= 140 THEN share_pctile END AS 'percentile', chg_2w AS '2w change (pp)', net AS 'net contracts', n_pool AS 'weeks ranked against', TRIM((CASE WHEN cohort_group LIKE '%+%' THEN 'sum of its components ' ELSE '' END) || (CASE WHEN n_pool < 140 THEN 'short history' ELSE '' END)) AS 'note' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND ts = (SELECT MAX(ts) FROM board_positioning WHERE dataset='$dataset' AND market_code='$market') ORDER BY (cohort_group LIKE '%+%'), ABS(share) DESC",
-          "queryText": "SELECT cohort_label AS 'cohort', share AS '% of OI', CASE WHEN n_pool >= 140 THEN share_pctile END AS 'percentile', chg_2w AS '2w change (pp)', net AS 'net contracts', n_pool AS 'weeks ranked against', TRIM((CASE WHEN cohort_group LIKE '%+%' THEN 'sum of its components ' ELSE '' END) || (CASE WHEN n_pool < 140 THEN 'short history' ELSE '' END)) AS 'note' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND ts = (SELECT MAX(ts) FROM board_positioning WHERE dataset='$dataset' AND market_code='$market') ORDER BY (cohort_group LIKE '%+%'), ABS(share) DESC",
+          "rawQueryText": "SELECT cohort_label AS 'cohort', \"long\" AS 'long', \"short\" AS 'short', gross AS 'gross', net AS 'net', ROUND(purity, 3) AS 'purity', share AS '% of OI', CASE WHEN n_pool >= 140 THEN share_pctile END AS 'percentile', TRIM((CASE WHEN cohort_group LIKE '%+%' THEN 'sum of its components ' ELSE '' END) || (CASE WHEN n_pool < 140 THEN 'short history' ELSE '' END)) AS 'note' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND ts = (SELECT MAX(ts) FROM board_positioning WHERE dataset='$dataset' AND market_code='$market') ORDER BY (cohort_group LIKE '%+%'), ABS(share) DESC",
+          "queryText": "SELECT cohort_label AS 'cohort', \"long\" AS 'long', \"short\" AS 'short', gross AS 'gross', net AS 'net', ROUND(purity, 3) AS 'purity', share AS '% of OI', CASE WHEN n_pool >= 140 THEN share_pctile END AS 'percentile', TRIM((CASE WHEN cohort_group LIKE '%+%' THEN 'sum of its components ' ELSE '' END) || (CASE WHEN n_pool < 140 THEN 'short history' ELSE '' END)) AS 'note' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND ts = (SELECT MAX(ts) FROM board_positioning WHERE dataset='$dataset' AND market_code='$market') ORDER BY (cohort_group LIKE '%+%'), ABS(share) DESC",
           "timeColumns": []
         }
       ],
@@ -840,7 +840,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 240
+                "value": 200
               }
             ]
           },
@@ -906,20 +906,8 @@
           },
           {
             "matcher": {
-              "id": "byName",
-              "options": "2w change (pp)"
-            },
-            "properties": [
-              {
-                "id": "decimals",
-                "value": 2
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "net contracts"
+              "id": "byRegexp",
+              "options": "long|short|gross|net"
             },
             "properties": [
               {
@@ -935,16 +923,301 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "weeks ranked against"
+              "options": "purity"
             },
             "properties": [
               {
                 "id": "decimals",
-                "value": 0
+                "value": 3
+              },
+              {
+                "id": "min",
+                "value": -1
+              },
+              {
+                "id": "max",
+                "value": 1
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "semi-dark-red",
+                      "value": null
+                    },
+                    {
+                      "color": "semi-dark-blue",
+                      "value": 0
+                    }
+                  ]
+                }
               }
             ]
           }
         ]
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "offchart"
+      },
+      "title": "Long, short and gross book \u2014 ${group:text}",
+      "description": "The two sides separately, because a net hides which of two very different things is happening. A cohort at net zero may be holding nothing, or holding a large book on both sides -- the first is absence, the second is a position that has to be unwound. All three series are CONTRACTS so they share one axis honestly; gross is long + short, so it is the envelope rather than a fourth independent measure.\n\nGross is a FRAGILITY measure, not a direction one: it rises when a cohort adds on both sides, which is exactly when a forced unwind has the most to sell. It is also non-negative by construction, which is why a percent change on it is meaningful where one on net is not.\n\nOne caveat the chart cannot show: CFTC's pre-1999 legacy non-reportable long/short columns are occasionally NEGATIVE -- 46 rows, worst -228,000 contracts in 1986 -- a publishing artefact of the era. Those are left as published rather than clamped, so gross can dip below zero on that slice. Clamping would hide a bad input instead of showing it.",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 34
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "offchart"
+          },
+          "queryType": "time series",
+          "rawQueryText": "SELECT ts/1000 AS time, \"long\" AS 'long', \"short\" AS 'short', gross AS 'gross (long + short)' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' AND ts BETWEEN $__from AND $__to ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, \"long\" AS 'long', \"short\" AS 'short', gross AS 'gross (long + short)' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' AND ts BETWEEN $__from AND $__to ORDER BY ts",
+          "timeColumns": [
+            "time"
+          ]
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "axisPlacement": "left",
+            "axisWidth": 80,
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "axisSoftMin": 0
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "long"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "semi-dark-blue"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "short"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "semi-dark-red"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "gross (long + short)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "text"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 6
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "offchart"
+      },
+      "title": "Directional purity: net / gross \u2014 ${group:text}",
+      "description": "What share of the book actually points somewhere. net / gross in [-1, 1]: at 1 every contract the cohort holds points the same way, near 0 it holds a large two-sided book with little net view. This is the panel that separates 'flat because small' from 'flat because hedged', which a net cannot.\n\nWorth reading against the panel beside it. On NASDAQ-100 this week the combined speculative group showed a modest net of +12.6% of open interest while carrying a 268,621-contract gross book at purity 0.148 -- the net was the small residual of two large opposing positions, not a modest view.\n\nSigned, so coloured by sign and not by identity: the entity changes with the dropdown, and a quantity straddling zero is the diverging case.",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 34
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "offchart"
+          },
+          "queryType": "time series",
+          "rawQueryText": "SELECT ts/1000 AS time, purity AS 'net / gross' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' AND ts BETWEEN $__from AND $__to ORDER BY ts",
+          "queryText": "SELECT ts/1000 AS time, purity AS 'net / gross' FROM board_positioning WHERE dataset='$dataset' AND market_code='$market' AND cohort_group='$group' AND ts BETWEEN $__from AND $__to ORDER BY ts",
+          "timeColumns": [
+            "time"
+          ]
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 3,
+          "min": -1,
+          "max": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "semi-dark-red",
+                "value": null
+              },
+              {
+                "color": "semi-dark-blue",
+                "value": 0
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 14,
+            "gradientMode": "scheme",
+            "spanNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "axisPlacement": "left",
+            "axisWidth": 80,
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "dashed"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "axisCenteredZero": true
+          }
+        },
+        "overrides": []
       }
     }
   ],
