@@ -178,6 +178,86 @@ def test_every_served_row_carries_a_reader_facing_label(tmp_path: Path) -> None:
     assert not ambiguous, f"these codes carry more than one label: {ambiguous}"
 
 
+def test_the_two_percentiles_are_segmented_differently(tmp_path: Path) -> None:
+    """share_pctile spans a contract re-specification; oi_pctile restarts at it.
+
+    This asymmetry is the whole reason `share` rather than `net` is the headline
+    measure, and it is invisible unless something asserts it -- both columns are
+    plausible floats in 0..100 either way.
+
+    Open interest is a LEVEL in contracts, so a 5.17x re-denomination makes the old
+    values incomparable and its rank has to restart. `share` is a RATIO, so the
+    re-denomination cancels in numerator and denominator alike and the history stays
+    one pool. Measured on the real store at the 2023-05-02 NASDAQ-100 Consolidated
+    re-basing: open interest 49,531 -> 255,954 and the cohort net 8,230 -> 43,252,
+    while share moved 16.62 -> 16.90 and its percentile 52.4 -> 53.2.
+
+    If someone segments share_pctile, every long-history percentile on the board
+    silently changes meaning and no other test notices.
+    """
+    src = ROOT / "tests" / "fixtures" / "fixture.sqlite"
+    work = tmp_path / "b.sqlite"
+    work.write_bytes(src.read_bytes())
+
+    con = db.connect(work)
+    try:
+        build.serving(con)
+        con.commit()
+        # 20974+ is in the fixture precisely because it carries the re-basing.
+        # Asserted on the VALUES, not on n_pool: n_pool is
+        # `int(share.notna().sum())`, one scalar for the whole history repeated on
+        # every row, so it is identical whether or not the rank was segmented. An
+        # earlier version of this test compared it to the row count and passed with
+        # a deliberately segmented rank injected -- vacuous.
+        #
+        # The signature is the FIRST ROW of a later segment. expanding_percentile
+        # scores a one-element pool at exactly 100, so a restarted rank reads 100.0
+        # there and a continued one reads whatever the ratio deserves.
+        multi = con.execute(
+            "SELECT dataset, market_code, cohort_group "
+            "FROM board_positioning GROUP BY dataset, market_code, cohort_group "
+            "HAVING COUNT(DISTINCT segment_id) > 1"
+        ).fetchall()
+        assert multi, (
+            "the fixture no longer holds a multi-segment market, so this property is "
+            "unpinned -- re-add one with `make fixtures` before deleting this test"
+        )
+
+        firsts = []
+        for dataset, code, group in multi:
+            rows = con.execute(
+                "SELECT segment_id, report_date, share_pctile, oi_pctile "
+                "FROM board_positioning WHERE dataset=? AND market_code=? "
+                "AND cohort_group=? ORDER BY segment_id, ts",
+                (dataset, code, group),
+            ).fetchall()
+            seen = set()
+            for segment, date, share_p, oi_p in rows:
+                if segment in seen:
+                    continue
+                seen.add(segment)
+                firsts.append((code, group, segment, date, share_p, oi_p))
+    finally:
+        con.close()
+
+    later = [f for f in firsts if f[2] > min(x[2] for x in firsts)]
+    assert later, "no later segment found, so there is nothing to compare across"
+
+    for code, group, segment, date, share_p, oi_p in later:
+        assert oi_p == pytest.approx(100.0), (
+            f"{code}/{group}: the first row of segment {segment} ({date}) has "
+            f"oi_pctile {oi_p}, not 100 -- the open-interest rank was not restarted "
+            "at the re-specification, so it is ranking contracts of two sizes "
+            "against each other"
+        )
+        assert share_p != pytest.approx(100.0), (
+            f"{code}/{group}: the first row of segment {segment} ({date}) has "
+            f"share_pctile {share_p}. A restarted rank scores its first observation "
+            "exactly 100, so share_pctile was segmented -- it must span the seam, "
+            "because a re-denomination cancels in a ratio"
+        )
+
+
 def test_the_full_size_bitcoin_contract_is_served(tmp_path: Path) -> None:
     """build.FORCE_SERVED exists for one measured mislabelling, so pin it.
 

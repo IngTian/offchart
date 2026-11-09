@@ -69,14 +69,53 @@ These are the ones a reader will otherwise misread. The full set of data caveats
   not currently use it.
 - **`purity` is `net / gross`**, in [−1, 1], and it CHANGES SIGN. Near 0 means a large
   two-sided book with little net view; ±1 means every contract points the same way.
-- **`segment_id` is the comparability unit.** Ranks are computed within a segment, which
-  is cut at contract-unit changes and at gaps over a quarter. Comparing a percentile
-  across two `segment_id`s is comparing two different contracts.
-- **`n_pool` is how many observations the percentile was ranked against.** A percentile
-  with `n_pool = 12` is not a percentile. The boards filter on it; a hand-written query
+- **`share_pctile` ranks the SHARE against its own history, not against other
+  cohorts.** It is a causal expanding percentile over the same
+  (dataset, market_code, cohort_group): week *t* is ranked only against weeks at or
+  before *t*. Because `share` is signed, so is the reading — near 0 is unusually
+  *short* for this cohort, near 100 unusually long, about 50 typical.
+- **`oi_pctile` is a different animal: it ranks the MARKET's open interest**, so it is
+  identical on every cohort row of a market-week, exactly as `open_interest` is.
+- **The two are segmented DIFFERENTLY, and this is deliberate.** `oi_pctile` restarts
+  at each `segment_id`; `share_pctile` runs straight through. A level in contracts is
+  not comparable across a contract-size change, but a ratio is — the re-denomination
+  cancels. NASDAQ-100 Consolidated's 2023-05-02 re-basing shows it:
+
+  ```
+  2023-04-25  seg=0  OI=   49,531  net=  8,230  share=16.62  share_pctile=52.4  oi_pctile= 32.6
+  2023-05-02  seg=1  OI=  255,954  net= 43,252  share=16.90  share_pctile=53.2  oi_pctile=100.0
+  ```
+
+  Open interest jumps 5.17× and the net 5.25×, so `share` moves 0.3 points and its
+  percentile 0.8. `oi_pctile` reads 100.0 for every week after the seam because in the
+  new segment every value is a new maximum — that is correct, not a bug, and it is why
+  you should not read `oi_pctile` across a seam as a trend.
+- **`segment_id` is the comparability unit for LEVELS.** It is cut at contract-unit
+  changes and at gaps over a quarter. Comparing an `oi_pctile` across two
+  `segment_id`s is comparing two different contracts; comparing a `share_pctile` is
+  fine, which is the whole reason the ratio is the headline measure.
+- **A share percentile is comparable within one market and cohort, never across
+  markets.** The net is bounded by the directional side (open interest *minus*
+  spreads) while the denominator is the full open interest, so `|share|` cannot reach
+  100% and its ceiling is market-specific: 88.1% on E-mini S&P 500 against 59.2% on
+  3-month SOFR, which carries 41% spreads. Same percentile, different achievable
+  range.
+- **`n_pool` is the LENGTH OF THE HISTORY, not what this row was ranked against.**
+  It is `share.notna().sum()` for the whole (market, cohort) — one scalar repeated on
+  every row. Because the ranks are causal, week 5 really was ranked against 5
+  observations while `n_pool` reads 848; the column answers "is there enough history
+  here for a percentile to mean anything", which is what you want for a filter
+  (`n_pool >= 200`) and not what you want for reading an early row. A percentile with
+  `n_pool = 12` is not a percentile. The boards filter on it; a hand-written query
   must too.
-- **`*_pool` columns in `board_inflation`** name the regime each rank was taken within,
-  for the same reason.
+- **`board_inflation`'s `*_pool` columns are COUNTS too, one per series**, because each
+  series ranks within its own regime rather than over its whole history. Today:
+  `sentiment_pool = 28`, `infl_exp_1y_pool = 536`, `infl_exp_5y10y_pool = 439` out of
+  586 rows. The sentiment pool is 28 because that series ranks only within the
+  post-July-2024 web era, and 28 months is below the 36-month floor — so
+  `sentiment_pctile` is **null on all 586 rows**, deliberately. A blank rank there is
+  the honest answer, not missing data; see
+  [data-notes](data-notes.md) for the −6.6-point collection-mode break that forces it.
 - **Two `board_flows` columns are COMPUTED, not published.** `nav_change_pct` is derived
   from NAV wherever the issuer publishes no usable change column — both plain-ETF
   sources — and SMH's `shares_outstanding` is derived as assets / NAV because VanEck
