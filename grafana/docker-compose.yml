@@ -15,8 +15,11 @@ services:
   grafana:
     image: grafana/grafana:12.3.1
     container_name: offchart-grafana
+    # Loopback only: anonymous Admin (below) must never be reachable from the network.
+    # Both families, because Chrome resolves localhost to ::1 first and does not fall back.
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
+      - "[::1]:3000:3000"
     environment:
       # Signed community plugin, pure Go, so it runs on the default Alpine image and
       # needs no allow_loading_unsigned_plugins.
