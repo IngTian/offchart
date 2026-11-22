@@ -384,7 +384,7 @@
       "title": "Money in and out, daily \u2014 ${ticker:text}",
       "description": "Creation and redemption by authorised participants. Blue is money arriving, red money leaving -- the same two hues the CFTC board uses for net long and net short, so a colour means one thing across the repo. Bars rather than a line because each day is a separate event, not a level that persists. This is not a measure of who is right: a fund can take inflows all the way down, which is precisely the thing worth looking at.",
       "gridPos": {
-        "h": 8,
+        "h": 13,
         "w": 24,
         "x": 0,
         "y": 9
@@ -484,10 +484,10 @@
       "title": "Cumulative flow since inception \u2014 ${ticker:text}",
       "description": "The expanding sum of the panel above, computed in pandas rather than in SQL so no panel recomputes an accumulation on every load. Read it against the NAV panel below using the shared crosshair: hover either and both move. They are TWO panels and not one, because dollars of flow and dollars per share are different scales and a second y-axis is the one chart mistake this repo will not make.",
       "gridPos": {
-        "h": 7,
+        "h": 12,
         "w": 24,
         "x": 0,
-        "y": 17
+        "y": 22
       },
       "targets": [
         {
@@ -601,10 +601,10 @@
       "title": "NAV \u2014 ${ticker:text}",
       "description": "Net asset value per share, split-adjusted retroactively by the publisher, so the whole history is on today's share basis. The price half of 'cumulative flow against price' -- its own panel, shared crosshair with the flow panels above.",
       "gridPos": {
-        "h": 6,
+        "h": 10,
         "w": 12,
         "x": 0,
-        "y": 24
+        "y": 34
       },
       "targets": [
         {
@@ -686,10 +686,10 @@
       "title": "Assets under management \u2014 ${ticker:text}",
       "description": "The size the rebalancing measure scales with, and the column flow is derived from. Assets move for two reasons -- money arriving and NAV moving -- which is exactly why flow divides the second one out rather than differencing this line.",
       "gridPos": {
-        "h": 6,
+        "h": 10,
         "w": 12,
         "x": 12,
-        "y": 24
+        "y": 34
       },
       "targets": [
         {
@@ -772,10 +772,10 @@
       "title": "Forced to trade per 1% move in $family \u2014 by leverage",
       "description": "What a 1% move in this index obliges ProShares' funds to trade, split by multiple: (multiple^2 - multiple) x assets x 1%. STACKED, and here that is correct rather than the usual error -- these are disjoint funds on the same index, and their demand genuinely adds. An inverse fund always works harder per dollar than its bull twin, and by (m+1)/(m-1) rather than by a fixed factor: 12 against 6 at 3x is twice, but 6 against 2 at 2x is THREE times. The bull and bear sides also add rather than offset, because a bear fund's short exposure grows as the index falls, so it must buy too.\n\nThere is no +1x series because there is nothing to draw: an unleveraged fund's coefficient is exactly 1-1 = 0, so it is obliged to trade nothing. Verified on every row: all 19,261 at multiple = +1 are exactly 0.0. A -1x fund is NOT zero -- (-1)^2-(-1) = 2, the same as a +2x -- because it is short, so a fall in the index grows its exposure and it must buy back. That is why an inverse fund a fraction of the size of its unleveraged twin still appears here and the twin does not.\n\nOne issuer only. Direxion is absent because it publishes no history, and it is the larger house in the chip complex; SSG covers the short semis leg instead, at 2x and a fraction of SOXS's size.",
       "gridPos": {
-        "h": 8,
+        "h": 13,
         "w": 24,
         "x": 0,
-        "y": 30
+        "y": 44
       },
       "targets": [
         {
