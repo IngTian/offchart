@@ -209,7 +209,7 @@
       "title": "Asset managers vs hedge funds vs their total \u2014 ${market:text}",
       "description": "All three on ONE axis because all three are the same quantity: net position as a percent of open interest. 'Speculative total' is the EXACT SUM of the two components on the financial-futures family, so it is drawn unfilled and never stacked -- stacking a part with its own total draws twice the real exposure. On the commodity and legacy families the two components do not exist and the total falls back to managed money / non-commercial, so the panel degrades to an honest single line rather than going blank. No percentile here: the combined cohort's percentile is not bounded by its components'.",
       "gridPos": {
-        "h": 10,
+        "h": 16,
         "w": 24,
         "x": 0,
         "y": 9
@@ -364,10 +364,10 @@
       "title": "Net position as % of open interest \u2014 ${group:text}",
       "description": "The cohort the dropdown selects, which is the only share chart that works for EVERY cohort on every family -- dealers, producers, swap dealers included. Coloured by SIGN rather than by identity: the entity here changes with the dropdown, so there is no entity for a colour to follow, and a signed quantity straddling zero is the diverging case. Red below zero (net short), blue above (net long); those two hues are deliberately outside the cohort palette above so no colour means two things on this board.",
       "gridPos": {
-        "h": 8,
+        "h": 13,
         "w": 24,
         "x": 0,
-        "y": 19
+        "y": 25
       },
       "targets": [
         {
@@ -464,10 +464,10 @@
       "title": "Percentiles of own history \u2014 ${group:text}",
       "description": "The repo's distinguishing asset as a HISTORY rather than one number. Both series are 0-100 so one axis is honest. Every point ranks its week against weeks at or before itself only; the ranks are precomputed in pandas because the segment boundaries a rank must respect come from a regex over free-text contract units. The share percentile is the COHORT's and is blank under 140 weeks of pool; the open-interest percentile is the MARKET's and is ranked only within the current contract-unit segment, so n_pool describes the first and not the second. Dashed lines mark the 10th and 90th.",
       "gridPos": {
-        "h": 7,
+        "h": 12,
         "w": 24,
         "x": 0,
-        "y": 27
+        "y": 38
       },
       "targets": [
         {
@@ -599,10 +599,10 @@
       "title": "Open interest (contracts)",
       "description": "A MARKET-week quantity, identical on every cohort row, so it is not filtered by the cohort dropdown and does not pretend to be per-cohort. MAX over the week's rows, never SUM: summing across cohort rows yields a plausible number three to six times too large. Contracts, not notional -- so it is not comparable across contract sizes, which is why full-size and micro bitcoin are separate markets here rather than one line.",
       "gridPos": {
-        "h": 6,
+        "h": 10,
         "w": 12,
         "x": 0,
-        "y": 41
+        "y": 62
       },
       "targets": [
         {
@@ -701,10 +701,10 @@
       "title": "Price \u2014 ${market:text}",
       "description": "A PROXY, never the reported contract -- lib/pricemap names the gap per entry, and the worst case is VIX, where positioning is in futures while this price is spot. Sampled as-of each report Tuesday, strictly backward and capped at 10 days of staleness, so a dead symbol leaves a gap instead of a flat line. Its own panel rather than an overlay on positioning: price and percent-of-open-interest are different scales, and a second y-axis is the one chart mistake this board will not make. Blank for most commodity and legacy markets, which have no mapped symbol.",
       "gridPos": {
-        "h": 6,
+        "h": 10,
         "w": 12,
         "x": 12,
-        "y": 41
+        "y": 62
       },
       "targets": [
         {
@@ -981,10 +981,10 @@
       "title": "Long, short and gross book \u2014 ${group:text}",
       "description": "The two sides separately, because a net hides which of two very different things is happening. A cohort at net zero may be holding nothing, or holding a large book on both sides -- the first is absence, the second is a position that has to be unwound. All three series are CONTRACTS so they share one axis honestly; gross is long + short, so it is the envelope rather than a fourth independent measure.\n\nGross is a FRAGILITY measure, not a direction one: it rises when a cohort adds on both sides, which is exactly when a forced unwind has the most to sell. It is also non-negative by construction, which is why a percent change on it is meaningful where one on net is not.\n\nOne caveat the chart cannot show: CFTC's pre-1999 legacy non-reportable long/short columns are occasionally NEGATIVE -- 46 rows, worst -228,000 contracts in 1986 -- a publishing artefact of the era. Those are left as published rather than clamped, so gross can dip below zero on that slice. Clamping would hide a bad input instead of showing it.",
       "gridPos": {
-        "h": 7,
+        "h": 12,
         "w": 12,
         "x": 0,
-        "y": 34
+        "y": 50
       },
       "targets": [
         {
@@ -1129,10 +1129,10 @@
       "title": "Directional purity: net / gross \u2014 ${group:text}",
       "description": "What share of the book actually points somewhere. net / gross in [-1, 1]: at 1 every contract the cohort holds points the same way, near 0 it holds a large two-sided book with little net view. This is the panel that separates 'flat because small' from 'flat because hedged', which a net cannot.\n\nWorth reading against the panel beside it. On NASDAQ-100 this week the combined speculative group showed a modest net of +12.6% of open interest while carrying a 268,621-contract gross book at purity 0.148 -- the net was the small residual of two large opposing positions, not a modest view.\n\nSigned, so coloured by sign and not by identity: the entity changes with the dropdown, and a quantity straddling zero is the diverging case.",
       "gridPos": {
-        "h": 7,
+        "h": 12,
         "w": 12,
         "x": 12,
-        "y": 34
+        "y": 50
       },
       "targets": [
         {
